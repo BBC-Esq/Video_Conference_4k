@@ -1,0 +1,71 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "videoconference4k"
+dynamic = ["version"]
+description = "Lightweight peer-to-peer video conferencing library for 4K60 streaming"
+readme = "README.md"
+license = {text = "Apache-2.0"}
+requires-python = ">=3.10"
+authors = [
+    {name = "Blair Chintella", email = "vici0549@gmail.com"}
+]
+keywords = [
+    "OpenCV",
+    "video processing",
+    "video conferencing",
+    "WebRTC",
+    "peer-to-peer",
+    "P2P",
+    "4K video",
+    "audio processing",
+    "real-time communication",
+]
+classifiers = [
+    "Development Status :: 5 - Production/Stable",
+    "Operating System :: OS Independent",
+    "Operating System :: POSIX",
+    "Operating System :: MacOS :: MacOS X",
+    "Operating System :: Microsoft :: Windows",
+    "Topic :: Multimedia :: Video",
+    "Topic :: Multimedia :: Sound/Audio",
+    "Topic :: Communications :: Conferencing",
+    "Topic :: Scientific/Engineering",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: Apache Software License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+]
+
+dependencies = [
+    "numpy",
+    "opencv-python>=3.0",
+    "colorlog",
+    "requests",
+    "tqdm",
+    "packaging",
+    "pyzmq>=4.0",
+    "simplejpeg>=1.6.1",
+    "msgpack",
+    "msgpack-numpy",
+    "uvloop; platform_system != 'Windows'",
+    "aiortc",
+    "sounddevice",
+]
+
+[project.urls]
+Homepage = "https://github.com/BBC-Esq/Video_Conference_4k"
+Repository = "https://github.com/BBC-Esq/Video_Conference_4k"
+Issues = "https://github.com/BBC-Esq/Video_Conference_4k/issues"
+
+[tool.setuptools.dynamic]
+version = {attr = "videoconference4k.version.__version__"}
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["videoconference4k*"]
