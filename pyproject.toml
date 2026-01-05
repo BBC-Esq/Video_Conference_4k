@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "videoconference4k"
-dynamic = ["version"]
+version = "1.0.0"
 description = "Lightweight peer-to-peer video conferencing library for 4K60 streaming"
 readme = "README.md"
 license = {text = "Apache-2.0"}
@@ -61,13 +61,15 @@ dependencies = [
     "sounddevice",
 ]
 
+[project.optional-dependencies]
+gpu = [
+    "PyNvVideoCodec>=2.0",
+]
+
 [project.urls]
 Homepage = "https://github.com/BBC-Esq/Video_Conference_4k"
 Repository = "https://github.com/BBC-Esq/Video_Conference_4k"
 Issues = "https://github.com/BBC-Esq/Video_Conference_4k/issues"
-
-[tool.setuptools.dynamic]
-version = {attr = "videoconference4k.version.__version__"}
 
 [tool.setuptools.packages.find]
 where = ["."]
