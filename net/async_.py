@@ -384,13 +384,25 @@ class AsyncTransport:
                         self.__msg_socket.recv(), timeout=self.__timeout
                     )
                     recvd_data = msgpack.unpackb(recvdmsg_encoded, use_list=False)
-                    
+
                     if recvd_data.get("gpu_accelerated"):
                         recvdframe_encoded = await asyncio.wait_for(
                             self.__msg_socket.recv_multipart(), timeout=self.__timeout
                         )
                         decoder = self.__get_nvidia_decoder()
-                        decoded_frame = decoder.decode(bytes(recvdframe_encoded[0]))
+                        decoded_frame = decoder.decode(
+                            bytes(recvdframe_encoded[0]),
+                            width=recvd_data.get("width"),
+                            height=recvd_data.get("height")
+                        )
+                        if decoded_frame is None:
+                            raise RuntimeError(
+                                "[AsyncTransport:ERROR] :: Received NVENC frame decoding failed. "
+                                "Width: {}, Height: {}".format(
+                                    recvd_data.get("width"),
+                                    recvd_data.get("height")
+                                )
+                            )
                         await self.__queue.put(decoded_frame)
                     elif recvd_data.get("return_type") == "ndarray":
                         recvdframe_encoded = await asyncio.wait_for(
@@ -483,14 +495,26 @@ class AsyncTransport:
                 )
                 self.__terminate = True
                 break
-            
+
             framemsg_encoded = await asyncio.wait_for(
                 self.__msg_socket.recv_multipart(), timeout=self.__timeout
             )
-            
+
             if data.get("gpu_accelerated"):
                 decoder = self.__get_nvidia_decoder()
-                frame = decoder.decode(bytes(framemsg_encoded[0]))
+                frame = decoder.decode(
+                    bytes(framemsg_encoded[0]),
+                    width=data.get("width"),
+                    height=data.get("height")
+                )
+                if frame is None:
+                    raise RuntimeError(
+                        "[AsyncTransport:ERROR] :: Received NVENC frame decoding failed. "
+                        "Width: {}, Height: {}".format(
+                            data.get("width"),
+                            data.get("height")
+                        )
+                    )
             else:
                 frame = msgpack.unpackb(
                     framemsg_encoded[0], use_list=False, object_hook=m.decode

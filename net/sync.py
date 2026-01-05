@@ -860,7 +860,7 @@ class SyncTransport:
                 if self.__bi_mode or self.__multiclient_mode:
                     with self.__return_data_lock:
                         local_return_data = self.__return_data
-                    
+
                     if not (local_return_data is None) and isinstance(
                         local_return_data, np.ndarray
                     ):
@@ -1014,14 +1014,22 @@ class SyncTransport:
 
             if msg_json.get("compression"):
                 compression_info = msg_json["compression"]
-                
+
                 if isinstance(compression_info, dict) and compression_info.get("type") == "nvenc":
                     decoder = self.__get_nvidia_decoder()
-                    frame = decoder.decode(bytes(msg_data))
+                    frame = decoder.decode(
+                        bytes(msg_data),
+                        width=compression_info.get("width"),
+                        height=compression_info.get("height")
+                    )
                     if frame is None:
                         self.__terminate.set()
                         raise RuntimeError(
-                            "[SyncTransport:ERROR] :: Received NVENC frame decoding failed"
+                            "[SyncTransport:ERROR] :: Received NVENC frame decoding failed. "
+                            "Width: {}, Height: {}".format(
+                                compression_info.get("width"),
+                                compression_info.get("height")
+                            )
                         )
                 else:
                     frame = simplejpeg.decode_jpeg(
@@ -1283,16 +1291,24 @@ class SyncTransport:
                         copy=self.__msg_copy,
                         track=self.__msg_track,
                     )
-                    
+
                     recv_compression = recv_json.get("compression")
-                    
+
                     if isinstance(recv_compression, dict) and recv_compression.get("type") == "nvenc":
                         decoder = self.__get_nvidia_decoder()
-                        recvd_data = decoder.decode(bytes(recv_array))
+                        recvd_data = decoder.decode(
+                            bytes(recv_array),
+                            width=recv_compression.get("width"),
+                            height=recv_compression.get("height")
+                        )
                         if recvd_data is None:
                             self.__terminate.set()
                             raise RuntimeError(
-                                "[SyncTransport:ERROR] :: Received NVENC frame decoding failed"
+                                "[SyncTransport:ERROR] :: Received NVENC frame decoding failed. "
+                                "Width: {}, Height: {}".format(
+                                    recv_compression.get("width"),
+                                    recv_compression.get("height")
+                                )
                             )
                     elif recv_compression:
                         recvd_data = simplejpeg.decode_jpeg(
@@ -1370,15 +1386,15 @@ class SyncTransport:
                 "Receive Mode" if self.__receive_mode else "Send Mode"
             )
         )
-        
+
         if self.__nvidia_encoder is not None:
             self.__nvidia_encoder.close()
             self.__nvidia_encoder = None
-        
+
         if self.__nvidia_decoder is not None:
             self.__nvidia_decoder.close()
             self.__nvidia_decoder = None
-        
+
         if self.__receive_mode:
             if not (self.__queue is None) and self.__queue:
                 self.__queue.clear()
