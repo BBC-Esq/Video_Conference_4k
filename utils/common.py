@@ -25,6 +25,30 @@ from typing import List, Optional, Union
 from numpy.typing import NDArray
 
 
+def set_cuda_paths():
+    venv_base = Path(sys.executable).parent.parent
+    nvidia_base = venv_base / 'Lib' / 'site-packages' / 'nvidia'
+    if not nvidia_base.exists():
+        return
+    paths_to_add = [
+        str(nvidia_base / 'cuda_runtime' / 'bin'),
+        str(nvidia_base / 'cuda_runtime' / 'lib' / 'x64'),
+        str(nvidia_base / 'cuda_runtime' / 'include'),
+        str(nvidia_base / 'cublas' / 'bin'),
+        str(nvidia_base / 'cudnn' / 'bin'),
+        str(nvidia_base / 'cuda_nvrtc' / 'bin'),
+        str(nvidia_base / 'cuda_nvcc' / 'bin'),
+    ]
+    current_path = os.environ.get('PATH', '')
+    os.environ['PATH'] = os.pathsep.join(paths_to_add + [current_path])
+    triton_cuda_path = nvidia_base / 'cuda_runtime'
+    current_cuda = os.environ.get('CUDA_PATH', '')
+    os.environ['CUDA_PATH'] = os.pathsep.join([str(triton_cuda_path), current_cuda])
+
+
+set_cuda_paths()
+
+
 def logger_handler():
     formatter = ColoredFormatter(
         "{green}{asctime}{reset} :: {bold_purple}{name:^13}{reset} :: {log_color}{levelname:^8}{reset} :: {bold_white}{message}",
