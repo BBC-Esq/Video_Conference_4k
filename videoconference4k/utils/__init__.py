@@ -30,6 +30,16 @@ from .intel_codec import (
     IntelEncoderSync,
 )
 
+from .software_codec import (
+    has_software_codec,
+    has_x264,
+    has_x265,
+    get_software_info,
+    SoftwareEncoder,
+    SoftwareEncoderSync,
+    SoftwareDecoder,
+)
+
 __all__ = [
     "set_cuda_paths",
     "logger_handler",
@@ -44,10 +54,24 @@ __all__ = [
     "validate_auth_keys",
     "reducer",
     "create_blank_frame",
+    # NVIDIA
     "has_nvidia_codec",
     "get_nvidia_info",
     "NvidiaEncoder",
     "NvidiaDecoder",
     "bgr_to_nv12",
     "nv12_to_bgr",
+    # Intel QSV
+    "has_intel_codec",
+    "get_intel_info",
+    "IntelEncoder",
+    "IntelEncoderSync",
+    # Software (x264/x265)
+    "has_software_codec",
+    "has_x264",
+    "has_x265",
+    "get_software_info",
+    "SoftwareEncoder",
+    "SoftwareEncoderSync",
+    "SoftwareDecoder",
 ]
