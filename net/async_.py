@@ -44,6 +44,10 @@ class AsyncTransport:
         framerate: Union[int, float] = 25,
         time_delay: int = 0,
         logging: bool = False,
+        gpu_accelerated: bool = False,
+        gpu_id: int = 0,
+        gpu_bitrate: int = 8000000,
+        gpu_codec: str = "h264",
         **options: dict
     ):
         self.__logging = logging if isinstance(logging, bool) else False
@@ -55,6 +59,25 @@ class AsyncTransport:
         )
         import_dependency_safe("msgpack" if msgpack is None else "")
         import_dependency_safe("msgpack_numpy" if m is None else "")
+
+        self.__gpu_accelerated = False
+        self.__gpu_id = gpu_id
+        self.__gpu_bitrate = gpu_bitrate
+        self.__gpu_codec = gpu_codec
+        self.__nvidia_encoder = None
+        self.__nvidia_decoder = None
+        self.__resolution = resolution
+
+        if gpu_accelerated:
+            try:
+                from ..utils.nvidia_codec import has_nvidia_codec, NvidiaEncoder, NvidiaDecoder
+                if has_nvidia_codec():
+                    self.__gpu_accelerated = True
+                    self.__logging and logger.info("GPU acceleration enabled with NVIDIA hardware encoding")
+                else:
+                    logger.warning("GPU acceleration requested but NVIDIA codec not available. Falling back to CPU.")
+            except ImportError as e:
+                logger.warning("GPU acceleration requested but PyNvVideoCodec not installed: {}. Falling back to CPU.".format(e))
 
         valid_messaging_patterns = {
             0: (zmq.PAIR, zmq.PAIR),
@@ -197,6 +220,28 @@ class AsyncTransport:
         asyncio.set_event_loop(self.loop)
         self.loop.run_forever()
 
+    def __get_nvidia_encoder(self, width: int, height: int):
+        if self.__nvidia_encoder is None:
+            from ..utils.nvidia_codec import NvidiaEncoder
+            self.__nvidia_encoder = NvidiaEncoder(
+                width=width,
+                height=height,
+                bitrate=self.__gpu_bitrate,
+                codec=self.__gpu_codec,
+                gpu_id=self.__gpu_id,
+                logging=self.__logging,
+            )
+        return self.__nvidia_encoder
+
+    def __get_nvidia_decoder(self):
+        if self.__nvidia_decoder is None:
+            from ..utils.nvidia_codec import NvidiaDecoder
+            self.__nvidia_decoder = NvidiaDecoder(
+                gpu_id=self.__gpu_id,
+                logging=self.__logging,
+            )
+        return self.__nvidia_decoder
+
     def launch(self) -> T:
         if self.__receive_mode:
             self.__logging and logger.debug(
@@ -252,9 +297,14 @@ class AsyncTransport:
                     self.__msg_pattern,
                 )
             )
-            logger.critical(
-                "Send Mode is successfully activated and ready to send data!"
-            )
+            if self.__gpu_accelerated:
+                logger.critical(
+                    "Send Mode is successfully activated with GPU acceleration and ready to send data!"
+                )
+            else:
+                logger.critical(
+                    "Send Mode is successfully activated and ready to send data!"
+                )
         except Exception as e:
             logger.exception(str(e))
             if self.__bi_mode:
@@ -299,16 +349,34 @@ class AsyncTransport:
             if not (frame.flags["C_CONTIGUOUS"]):
                 frame = np.ascontiguousarray(frame, dtype=frame.dtype)
 
-            data_dict = dict(
-                terminate=False,
-                bi_mode=self.__bi_mode,
-                data=data if not (data is None) else "",
-            )
-            data_enc = msgpack.packb(data_dict)
-            await self.__msg_socket.send(data_enc, flags=zmq.SNDMORE)
+            if self.__gpu_accelerated:
+                encoder = self.__get_nvidia_encoder(frame.shape[1], frame.shape[0])
+                encoded_frame = encoder.encode(frame)
 
-            frame_enc = msgpack.packb(frame, default=m.encode)
-            await self.__msg_socket.send_multipart([frame_enc])
+                data_dict = dict(
+                    terminate=False,
+                    bi_mode=self.__bi_mode,
+                    data=data if not (data is None) else "",
+                    gpu_accelerated=True,
+                    gpu_codec=self.__gpu_codec,
+                    width=frame.shape[1],
+                    height=frame.shape[0],
+                )
+                data_enc = msgpack.packb(data_dict)
+                await self.__msg_socket.send(data_enc, flags=zmq.SNDMORE)
+                await self.__msg_socket.send_multipart([encoded_frame])
+            else:
+                data_dict = dict(
+                    terminate=False,
+                    bi_mode=self.__bi_mode,
+                    data=data if not (data is None) else "",
+                    gpu_accelerated=False,
+                )
+                data_enc = msgpack.packb(data_dict)
+                await self.__msg_socket.send(data_enc, flags=zmq.SNDMORE)
+
+                frame_enc = msgpack.packb(frame, default=m.encode)
+                await self.__msg_socket.send_multipart([frame_enc])
 
             if self.__msg_pattern < 2:
                 if self.__bi_mode:
@@ -316,7 +384,15 @@ class AsyncTransport:
                         self.__msg_socket.recv(), timeout=self.__timeout
                     )
                     recvd_data = msgpack.unpackb(recvdmsg_encoded, use_list=False)
-                    if recvd_data.get("return_type") == "ndarray":
+                    
+                    if recvd_data.get("gpu_accelerated"):
+                        recvdframe_encoded = await asyncio.wait_for(
+                            self.__msg_socket.recv_multipart(), timeout=self.__timeout
+                        )
+                        decoder = self.__get_nvidia_decoder()
+                        decoded_frame = decoder.decode(bytes(recvdframe_encoded[0]))
+                        await self.__queue.put(decoded_frame)
+                    elif recvd_data.get("return_type") == "ndarray":
                         recvdframe_encoded = await asyncio.wait_for(
                             self.__msg_socket.recv_multipart(), timeout=self.__timeout
                         )
@@ -368,7 +444,10 @@ class AsyncTransport:
                     self.__msg_pattern,
                 )
             )
-            logger.critical("Receive Mode is activated successfully!")
+            if self.__gpu_accelerated:
+                logger.critical("Receive Mode is activated successfully with GPU acceleration!")
+            else:
+                logger.critical("Receive Mode is activated successfully!")
         except Exception as e:
             logger.exception(str(e))
             raise RuntimeError(
@@ -404,12 +483,18 @@ class AsyncTransport:
                 )
                 self.__terminate = True
                 break
+            
             framemsg_encoded = await asyncio.wait_for(
                 self.__msg_socket.recv_multipart(), timeout=self.__timeout
             )
-            frame = msgpack.unpackb(
-                framemsg_encoded[0], use_list=False, object_hook=m.decode
-            )
+            
+            if data.get("gpu_accelerated"):
+                decoder = self.__get_nvidia_decoder()
+                frame = decoder.decode(bytes(framemsg_encoded[0]))
+            else:
+                frame = msgpack.unpackb(
+                    framemsg_encoded[0], use_list=False, object_hook=m.decode
+                )
 
             if self.__msg_pattern < 2:
                 if self.__bi_mode and data.get("bi_mode", False):
@@ -426,21 +511,41 @@ class AsyncTransport:
                                 return_data, dtype=return_data.dtype
                             )
 
-                        rettype_dict = dict(
-                            return_type=(type(return_data).__name__),
-                            return_data=None,
-                        )
-                        rettype_enc = msgpack.packb(rettype_dict)
-                        await self.__msg_socket.send(rettype_enc, flags=zmq.SNDMORE)
+                        if self.__gpu_accelerated:
+                            encoder = self.__get_nvidia_encoder(
+                                return_data.shape[1], return_data.shape[0]
+                            )
+                            encoded_return = encoder.encode(return_data)
 
-                        retframe_enc = msgpack.packb(return_data, default=m.encode)
-                        await self.__msg_socket.send_multipart([retframe_enc])
+                            rettype_dict = dict(
+                                return_type=(type(return_data).__name__),
+                                return_data=None,
+                                gpu_accelerated=True,
+                                gpu_codec=self.__gpu_codec,
+                                width=return_data.shape[1],
+                                height=return_data.shape[0],
+                            )
+                            rettype_enc = msgpack.packb(rettype_dict)
+                            await self.__msg_socket.send(rettype_enc, flags=zmq.SNDMORE)
+                            await self.__msg_socket.send_multipart([encoded_return])
+                        else:
+                            rettype_dict = dict(
+                                return_type=(type(return_data).__name__),
+                                return_data=None,
+                                gpu_accelerated=False,
+                            )
+                            rettype_enc = msgpack.packb(rettype_dict)
+                            await self.__msg_socket.send(rettype_enc, flags=zmq.SNDMORE)
+
+                            retframe_enc = msgpack.packb(return_data, default=m.encode)
+                            await self.__msg_socket.send_multipart([retframe_enc])
                     else:
                         return_dict = dict(
                             return_type=(type(return_data).__name__),
                             return_data=(
                                 return_data if not (return_data is None) else ""
                             ),
+                            gpu_accelerated=False,
                         )
                         retdata_enc = msgpack.packb(return_dict)
                         await self.__msg_socket.send(retdata_enc)
@@ -493,6 +598,14 @@ class AsyncTransport:
                 "Receive Mode" if self.__receive_mode else "Send Mode"
             )
         )
+
+        if self.__nvidia_encoder is not None:
+            self.__nvidia_encoder.close()
+            self.__nvidia_encoder = None
+
+        if self.__nvidia_decoder is not None:
+            self.__nvidia_decoder.close()
+            self.__nvidia_decoder = None
 
         if self.__receive_mode:
             self.__terminate = True

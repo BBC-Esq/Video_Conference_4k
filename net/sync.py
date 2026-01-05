@@ -10,7 +10,7 @@ from threading import Thread, Lock, Event
 from collections import deque
 from os.path import expanduser
 from numpy.typing import NDArray
-from typing import Optional, Any
+from typing import Optional, Any, Tuple
 
 from ..utils.common import (
     logger_handler,
@@ -46,6 +46,11 @@ class SyncTransport:
         pattern: int = 0,
         receive_mode: bool = False,
         logging: bool = False,
+        gpu_accelerated: bool = False,
+        gpu_id: int = 0,
+        gpu_resolution: Tuple[int, int] = None,
+        gpu_bitrate: int = 8000000,
+        gpu_codec: str = "h264",
         **options: dict
     ):
         self.__logging = logging if isinstance(logging, bool) else False
@@ -58,6 +63,25 @@ class SyncTransport:
         import_dependency_safe(
             "simplejpeg" if simplejpeg is None else "", error="log", min_version="1.6.1"
         )
+
+        self.__gpu_accelerated = False
+        self.__gpu_id = gpu_id
+        self.__gpu_resolution = gpu_resolution
+        self.__gpu_bitrate = gpu_bitrate
+        self.__gpu_codec = gpu_codec
+        self.__nvidia_encoder = None
+        self.__nvidia_decoder = None
+
+        if gpu_accelerated:
+            try:
+                from ..utils.nvidia_codec import has_nvidia_codec, NvidiaEncoder, NvidiaDecoder
+                if has_nvidia_codec():
+                    self.__gpu_accelerated = True
+                    self.__logging and logger.info("GPU acceleration enabled with NVIDIA hardware encoding")
+                else:
+                    logger.warning("GPU acceleration requested but NVIDIA codec not available. Falling back to CPU.")
+            except ImportError as e:
+                logger.warning("GPU acceleration requested but PyNvVideoCodec not installed: {}. Falling back to CPU.".format(e))
 
         valid_messaging_patterns = {
             0: (zmq.PAIR, zmq.PAIR),
@@ -108,7 +132,7 @@ class SyncTransport:
         custom_cert_location = ""
 
         self.__jpeg_compression = (
-            True if not (simplejpeg is None) else False
+            True if not (simplejpeg is None) and not self.__gpu_accelerated else False
         )
         self.__jpeg_compression_quality = 90
         self.__jpeg_compression_fastdct = True
@@ -211,6 +235,7 @@ class SyncTransport:
                 key == "jpeg_compression"
                 and not (simplejpeg is None)
                 and isinstance(value, (bool, str))
+                and not self.__gpu_accelerated
             ):
                 if isinstance(value, str) and value.strip().upper() in [
                     "RGB",
@@ -527,18 +552,23 @@ class SyncTransport:
                         (protocol + "://" + str(address) + ":" + str(port)), pattern
                     )
                 )
-                self.__jpeg_compression and logger.debug(
-                    "JPEG Frame-Compression is activated for this connection with Colorspace:`{}`, Quality:`{}`%, Fastdct:`{}`, and Fastupsample:`{}`.".format(
-                        self.__jpeg_compression_colorspace,
-                        self.__jpeg_compression_quality,
-                        ("enabled" if self.__jpeg_compression_fastdct else "disabled"),
-                        (
-                            "enabled"
-                            if self.__jpeg_compression_fastupsample
-                            else "disabled"
-                        ),
+                if self.__gpu_accelerated:
+                    logger.debug(
+                        "GPU-Accelerated encoding is activated for this connection using NVIDIA hardware."
                     )
-                )
+                elif self.__jpeg_compression:
+                    logger.debug(
+                        "JPEG Frame-Compression is activated for this connection with Colorspace:`{}`, Quality:`{}`%, Fastdct:`{}`, and Fastupsample:`{}`.".format(
+                            self.__jpeg_compression_colorspace,
+                            self.__jpeg_compression_quality,
+                            ("enabled" if self.__jpeg_compression_fastdct else "disabled"),
+                            (
+                                "enabled"
+                                if self.__jpeg_compression_fastupsample
+                                else "disabled"
+                            ),
+                        )
+                    )
                 self.__secure_mode and logger.debug(
                     "Successfully enabled ZMQ Security Mechanism: `{}` for this connection.".format(
                         valid_security_mech[self.__secure_mode]
@@ -681,18 +711,23 @@ class SyncTransport:
                         (protocol + "://" + str(address) + ":" + str(port)), pattern
                     )
                 )
-                self.__jpeg_compression and logger.debug(
-                    "JPEG Frame-Compression is activated for this connection with Colorspace:`{}`, Quality:`{}`%, Fastdct:`{}`, and Fastupsample:`{}`.".format(
-                        self.__jpeg_compression_colorspace,
-                        self.__jpeg_compression_quality,
-                        ("enabled" if self.__jpeg_compression_fastdct else "disabled"),
-                        (
-                            "enabled"
-                            if self.__jpeg_compression_fastupsample
-                            else "disabled"
-                        ),
+                if self.__gpu_accelerated:
+                    logger.debug(
+                        "GPU-Accelerated encoding is activated for this connection using NVIDIA hardware."
                     )
-                )
+                elif self.__jpeg_compression:
+                    logger.debug(
+                        "JPEG Frame-Compression is activated for this connection with Colorspace:`{}`, Quality:`{}`%, Fastdct:`{}`, and Fastupsample:`{}`.".format(
+                            self.__jpeg_compression_colorspace,
+                            self.__jpeg_compression_quality,
+                            ("enabled" if self.__jpeg_compression_fastdct else "disabled"),
+                            (
+                                "enabled"
+                                if self.__jpeg_compression_fastupsample
+                                else "disabled"
+                            ),
+                        )
+                    )
                 self.__secure_mode and logger.debug(
                     "Enabled ZMQ Security Mechanism: `{}` for this connection.".format(
                         valid_security_mech[self.__secure_mode]
@@ -702,6 +737,28 @@ class SyncTransport:
                 logger.debug(
                     "Send Mode is successfully activated and ready to send data."
                 )
+
+    def __get_nvidia_encoder(self, width: int, height: int):
+        if self.__nvidia_encoder is None:
+            from ..utils.nvidia_codec import NvidiaEncoder
+            self.__nvidia_encoder = NvidiaEncoder(
+                width=width,
+                height=height,
+                bitrate=self.__gpu_bitrate,
+                codec=self.__gpu_codec,
+                gpu_id=self.__gpu_id,
+                logging=self.__logging,
+            )
+        return self.__nvidia_encoder
+
+    def __get_nvidia_decoder(self):
+        if self.__nvidia_decoder is None:
+            from ..utils.nvidia_codec import NvidiaDecoder
+            self.__nvidia_decoder = NvidiaDecoder(
+                gpu_id=self.__gpu_id,
+                logging=self.__logging,
+            )
+        return self.__nvidia_decoder
 
     def __recv_handler(self):
         frame = None
@@ -814,7 +871,43 @@ class SyncTransport:
                                 return_data, dtype=return_data.dtype
                             )
 
-                        if self.__jpeg_compression:
+                        if self.__gpu_accelerated:
+                            encoder = self.__get_nvidia_encoder(
+                                return_data.shape[1], return_data.shape[0]
+                            )
+                            return_data = encoder.encode(return_data)
+
+                            return_dict = (
+                                dict(port=self.__port)
+                                if self.__multiclient_mode
+                                else dict()
+                            )
+
+                            return_dict.update(
+                                dict(
+                                    return_type=(type(local_return_data).__name__),
+                                    compression={
+                                        "type": "nvenc",
+                                        "codec": self.__gpu_codec,
+                                        "width": local_return_data.shape[1],
+                                        "height": local_return_data.shape[0],
+                                    },
+                                    array_dtype="",
+                                    array_shape="",
+                                    data=None,
+                                )
+                            )
+
+                            self.__msg_socket.send_json(
+                                return_dict, self.__msg_flag | zmq.SNDMORE
+                            )
+                            self.__msg_socket.send(
+                                return_data,
+                                flags=self.__msg_flag,
+                                copy=self.__msg_copy,
+                                track=self.__msg_track,
+                            )
+                        elif self.__jpeg_compression:
                             if self.__jpeg_compression_colorspace == "GRAY":
                                 if return_data.ndim == 2:
                                     return_data = return_data[:, :, np.newaxis]
@@ -833,47 +926,69 @@ class SyncTransport:
                                     fastdct=self.__jpeg_compression_fastdct,
                                 )
 
-                        return_dict = (
-                            dict(port=self.__port)
-                            if self.__multiclient_mode
-                            else dict()
-                        )
-
-                        return_dict.update(
-                            dict(
-                                return_type=(type(local_return_data).__name__),
-                                compression=(
-                                    {
-                                        "dct": self.__jpeg_compression_fastdct,
-                                        "ups": self.__jpeg_compression_fastupsample,
-                                        "colorspace": self.__jpeg_compression_colorspace,
-                                    }
-                                    if self.__jpeg_compression
-                                    else False
-                                ),
-                                array_dtype=(
-                                    str(local_return_data.dtype)
-                                    if not (self.__jpeg_compression)
-                                    else ""
-                                ),
-                                array_shape=(
-                                    local_return_data.shape
-                                    if not (self.__jpeg_compression)
-                                    else ""
-                                ),
-                                data=None,
+                            return_dict = (
+                                dict(port=self.__port)
+                                if self.__multiclient_mode
+                                else dict()
                             )
-                        )
 
-                        self.__msg_socket.send_json(
-                            return_dict, self.__msg_flag | zmq.SNDMORE
-                        )
-                        self.__msg_socket.send(
-                            return_data,
-                            flags=self.__msg_flag,
-                            copy=self.__msg_copy,
-                            track=self.__msg_track,
-                        )
+                            return_dict.update(
+                                dict(
+                                    return_type=(type(local_return_data).__name__),
+                                    compression=(
+                                        {
+                                            "dct": self.__jpeg_compression_fastdct,
+                                            "ups": self.__jpeg_compression_fastupsample,
+                                            "colorspace": self.__jpeg_compression_colorspace,
+                                        }
+                                    ),
+                                    array_dtype=(
+                                        str(local_return_data.dtype)
+                                        if not (self.__jpeg_compression)
+                                        else ""
+                                    ),
+                                    array_shape=(
+                                        local_return_data.shape
+                                        if not (self.__jpeg_compression)
+                                        else ""
+                                    ),
+                                    data=None,
+                                )
+                            )
+
+                            self.__msg_socket.send_json(
+                                return_dict, self.__msg_flag | zmq.SNDMORE
+                            )
+                            self.__msg_socket.send(
+                                return_data,
+                                flags=self.__msg_flag,
+                                copy=self.__msg_copy,
+                                track=self.__msg_track,
+                            )
+                        else:
+                            return_dict = (
+                                dict(port=self.__port)
+                                if self.__multiclient_mode
+                                else dict()
+                            )
+                            return_dict.update(
+                                dict(
+                                    return_type=(type(local_return_data).__name__),
+                                    compression=False,
+                                    array_dtype=str(local_return_data.dtype),
+                                    array_shape=local_return_data.shape,
+                                    data=None,
+                                )
+                            )
+                            self.__msg_socket.send_json(
+                                return_dict, self.__msg_flag | zmq.SNDMORE
+                            )
+                            self.__msg_socket.send(
+                                return_data,
+                                flags=self.__msg_flag,
+                                copy=self.__msg_copy,
+                                track=self.__msg_track,
+                            )
                     else:
                         return_dict = (
                             dict(port=self.__port)
@@ -897,22 +1012,33 @@ class SyncTransport:
                 if local_return_data:
                     logger.warning("`return_data` is disabled for this pattern!")
 
-            if msg_json["compression"]:
-                frame = simplejpeg.decode_jpeg(
-                    msg_data,
-                    colorspace=msg_json["compression"]["colorspace"],
-                    fastdct=self.__jpeg_compression_fastdct
-                    or msg_json["compression"]["dct"],
-                    fastupsample=self.__jpeg_compression_fastupsample
-                    or msg_json["compression"]["ups"],
-                )
-                if frame is None:
-                    self.__terminate.set()
-                    raise RuntimeError(
-                        "[SyncTransport:ERROR] :: Received compressed JPEG frame decoding failed"
+            if msg_json.get("compression"):
+                compression_info = msg_json["compression"]
+                
+                if isinstance(compression_info, dict) and compression_info.get("type") == "nvenc":
+                    decoder = self.__get_nvidia_decoder()
+                    frame = decoder.decode(bytes(msg_data))
+                    if frame is None:
+                        self.__terminate.set()
+                        raise RuntimeError(
+                            "[SyncTransport:ERROR] :: Received NVENC frame decoding failed"
+                        )
+                else:
+                    frame = simplejpeg.decode_jpeg(
+                        msg_data,
+                        colorspace=compression_info["colorspace"],
+                        fastdct=self.__jpeg_compression_fastdct
+                        or compression_info["dct"],
+                        fastupsample=self.__jpeg_compression_fastupsample
+                        or compression_info["ups"],
                     )
-                if msg_json["compression"]["colorspace"] == "GRAY" and frame.ndim == 3:
-                    frame = np.squeeze(frame, axis=2)
+                    if frame is None:
+                        self.__terminate.set()
+                        raise RuntimeError(
+                            "[SyncTransport:ERROR] :: Received compressed JPEG frame decoding failed"
+                        )
+                    if compression_info["colorspace"] == "GRAY" and frame.ndim == 3:
+                        frame = np.squeeze(frame, axis=2)
             else:
                 frame_buffer = np.frombuffer(msg_data, dtype=msg_json["dtype"])
                 frame = frame_buffer.reshape(msg_json["shape"])
@@ -1006,7 +1132,37 @@ class SyncTransport:
         if not (frame.flags["C_CONTIGUOUS"]):
             frame = np.ascontiguousarray(frame, dtype=frame.dtype)
 
-        if self.__jpeg_compression:
+        original_shape = frame.shape
+        original_dtype = frame.dtype
+
+        if self.__gpu_accelerated:
+            encoder = self.__get_nvidia_encoder(frame.shape[1], frame.shape[0])
+            encoded_frame = encoder.encode(frame)
+
+            msg_dict = dict(port=self.__port) if self.__multiserver_mode else dict()
+
+            msg_dict.update(
+                dict(
+                    terminate_flag=False,
+                    compression={
+                        "type": "nvenc",
+                        "codec": self.__gpu_codec,
+                        "width": original_shape[1],
+                        "height": original_shape[0],
+                    },
+                    message=message,
+                    pattern=str(self.__pattern),
+                    dtype="",
+                    shape="",
+                )
+            )
+
+            self.__msg_socket.send_json(msg_dict, self.__msg_flag | zmq.SNDMORE)
+            self.__msg_socket.send(
+                encoded_frame, flags=self.__msg_flag, copy=self.__msg_copy, track=self.__msg_track
+            )
+
+        elif self.__jpeg_compression:
             if self.__jpeg_compression_colorspace == "GRAY":
                 if frame.ndim == 2:
                     frame = np.expand_dims(frame, axis=2)
@@ -1025,31 +1181,48 @@ class SyncTransport:
                     fastdct=self.__jpeg_compression_fastdct,
                 )
 
-        msg_dict = dict(port=self.__port) if self.__multiserver_mode else dict()
+            msg_dict = dict(port=self.__port) if self.__multiserver_mode else dict()
 
-        msg_dict.update(
-            dict(
-                terminate_flag=False,
-                compression=(
-                    {
-                        "dct": self.__jpeg_compression_fastdct,
-                        "ups": self.__jpeg_compression_fastupsample,
-                        "colorspace": self.__jpeg_compression_colorspace,
-                    }
-                    if self.__jpeg_compression
-                    else False
-                ),
-                message=message,
-                pattern=str(self.__pattern),
-                dtype=str(frame.dtype) if not (self.__jpeg_compression) else "",
-                shape=frame.shape if not (self.__jpeg_compression) else "",
+            msg_dict.update(
+                dict(
+                    terminate_flag=False,
+                    compression=(
+                        {
+                            "dct": self.__jpeg_compression_fastdct,
+                            "ups": self.__jpeg_compression_fastupsample,
+                            "colorspace": self.__jpeg_compression_colorspace,
+                        }
+                    ),
+                    message=message,
+                    pattern=str(self.__pattern),
+                    dtype=str(original_dtype),
+                    shape=original_shape,
+                )
             )
-        )
 
-        self.__msg_socket.send_json(msg_dict, self.__msg_flag | zmq.SNDMORE)
-        self.__msg_socket.send(
-            frame, flags=self.__msg_flag, copy=self.__msg_copy, track=self.__msg_track
-        )
+            self.__msg_socket.send_json(msg_dict, self.__msg_flag | zmq.SNDMORE)
+            self.__msg_socket.send(
+                frame, flags=self.__msg_flag, copy=self.__msg_copy, track=self.__msg_track
+            )
+
+        else:
+            msg_dict = dict(port=self.__port) if self.__multiserver_mode else dict()
+
+            msg_dict.update(
+                dict(
+                    terminate_flag=False,
+                    compression=False,
+                    message=message,
+                    pattern=str(self.__pattern),
+                    dtype=str(frame.dtype),
+                    shape=frame.shape,
+                )
+            )
+
+            self.__msg_socket.send_json(msg_dict, self.__msg_flag | zmq.SNDMORE)
+            self.__msg_socket.send(
+                frame, flags=self.__msg_flag, copy=self.__msg_copy, track=self.__msg_track
+            )
 
         if self.__pattern < 2:
             if self.__bi_mode or self.__multiclient_mode:
@@ -1110,26 +1283,37 @@ class SyncTransport:
                         copy=self.__msg_copy,
                         track=self.__msg_track,
                     )
-                    if recv_json["compression"]:
+                    
+                    recv_compression = recv_json.get("compression")
+                    
+                    if isinstance(recv_compression, dict) and recv_compression.get("type") == "nvenc":
+                        decoder = self.__get_nvidia_decoder()
+                        recvd_data = decoder.decode(bytes(recv_array))
+                        if recvd_data is None:
+                            self.__terminate.set()
+                            raise RuntimeError(
+                                "[SyncTransport:ERROR] :: Received NVENC frame decoding failed"
+                            )
+                    elif recv_compression:
                         recvd_data = simplejpeg.decode_jpeg(
                             recv_array,
-                            colorspace=recv_json["compression"]["colorspace"],
+                            colorspace=recv_compression["colorspace"],
                             fastdct=self.__jpeg_compression_fastdct
-                            or recv_json["compression"]["dct"],
+                            or recv_compression["dct"],
                             fastupsample=self.__jpeg_compression_fastupsample
-                            or recv_json["compression"]["ups"],
+                            or recv_compression["ups"],
                         )
                         if recvd_data is None:
                             self.__terminate.set()
                             raise RuntimeError(
                                 "[SyncTransport:ERROR] :: Received compressed frame `{}` decoding failed with flag: {}.".format(
-                                    recv_json["compression"],
+                                    recv_compression,
                                     self.__ex_compression_params,
                                 )
                             )
 
                         if (
-                            recv_json["compression"]["colorspace"] == "GRAY"
+                            recv_compression["colorspace"] == "GRAY"
                             and recvd_data.ndim == 3
                         ):
                             recvd_data = np.squeeze(recvd_data, axis=2)
@@ -1186,6 +1370,15 @@ class SyncTransport:
                 "Receive Mode" if self.__receive_mode else "Send Mode"
             )
         )
+        
+        if self.__nvidia_encoder is not None:
+            self.__nvidia_encoder.close()
+            self.__nvidia_encoder = None
+        
+        if self.__nvidia_decoder is not None:
+            self.__nvidia_decoder.close()
+            self.__nvidia_decoder = None
+        
         if self.__receive_mode:
             if not (self.__queue is None) and self.__queue:
                 self.__queue.clear()
