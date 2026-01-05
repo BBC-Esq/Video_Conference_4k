@@ -23,6 +23,13 @@ from .nvidia_codec import (
     nv12_to_bgr,
 )
 
+from .intel_codec import (
+    has_intel_codec,
+    get_intel_info,
+    IntelEncoder,
+    IntelEncoderSync,
+)
+
 __all__ = [
     "set_cuda_paths",
     "logger_handler",
