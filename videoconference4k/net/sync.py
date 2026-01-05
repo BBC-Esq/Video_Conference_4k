@@ -65,12 +65,15 @@ class SyncTransport:
         )
 
         self.__gpu_accelerated = False
+        self.__software_accelerated = False
         self.__gpu_id = gpu_id
         self.__gpu_resolution = gpu_resolution
         self.__gpu_bitrate = gpu_bitrate
         self.__gpu_codec = gpu_codec
         self.__nvidia_encoder = None
         self.__nvidia_decoder = None
+        self.__software_encoder = None
+        self.__software_decoder = None
 
         if gpu_accelerated:
             try:
@@ -79,9 +82,27 @@ class SyncTransport:
                     self.__gpu_accelerated = True
                     self.__logging and logger.info("GPU acceleration enabled with NVIDIA hardware encoding")
                 else:
-                    logger.warning("GPU acceleration requested but NVIDIA codec not available. Falling back to CPU.")
+                    logger.warning("GPU acceleration requested but NVIDIA codec not available. Checking software fallback.")
+                    try:
+                        from ..utils.software_codec import has_x264, SoftwareEncoder, SoftwareDecoder
+                        if has_x264():
+                            self.__software_accelerated = True
+                            self.__logging and logger.info("Software acceleration enabled with x264 encoding")
+                        else:
+                            logger.warning("x264 not available. Falling back to JPEG compression.")
+                    except ImportError:
+                        logger.warning("Software codec not available. Falling back to JPEG compression.")
             except ImportError as e:
-                logger.warning("GPU acceleration requested but PyNvVideoCodec not installed: {}. Falling back to CPU.".format(e))
+                logger.warning("GPU acceleration requested but PyNvVideoCodec not installed: {}. Checking software fallback.".format(e))
+                try:
+                    from ..utils.software_codec import has_x264, SoftwareEncoder, SoftwareDecoder
+                    if has_x264():
+                        self.__software_accelerated = True
+                        self.__logging and logger.info("Software acceleration enabled with x264 encoding")
+                    else:
+                        logger.warning("x264 not available. Falling back to JPEG compression.")
+                except ImportError:
+                    logger.warning("Software codec not available. Falling back to JPEG compression.")
 
         valid_messaging_patterns = {
             0: (zmq.PAIR, zmq.PAIR),
@@ -132,7 +153,7 @@ class SyncTransport:
         custom_cert_location = ""
 
         self.__jpeg_compression = (
-            True if not (simplejpeg is None) and not self.__gpu_accelerated else False
+            True if not (simplejpeg is None) and not self.__gpu_accelerated and not self.__software_accelerated else False
         )
         self.__jpeg_compression_quality = 90
         self.__jpeg_compression_fastdct = True
@@ -236,6 +257,7 @@ class SyncTransport:
                 and not (simplejpeg is None)
                 and isinstance(value, (bool, str))
                 and not self.__gpu_accelerated
+                and not self.__software_accelerated
             ):
                 if isinstance(value, str) and value.strip().upper() in [
                     "RGB",
@@ -556,6 +578,10 @@ class SyncTransport:
                     logger.debug(
                         "GPU-Accelerated encoding is activated for this connection using NVIDIA hardware."
                     )
+                elif self.__software_accelerated:
+                    logger.debug(
+                        "Software-Accelerated encoding is activated for this connection using x264."
+                    )
                 elif self.__jpeg_compression:
                     logger.debug(
                         "JPEG Frame-Compression is activated for this connection with Colorspace:`{}`, Quality:`{}`%, Fastdct:`{}`, and Fastupsample:`{}`.".format(
@@ -715,6 +741,10 @@ class SyncTransport:
                     logger.debug(
                         "GPU-Accelerated encoding is activated for this connection using NVIDIA hardware."
                     )
+                elif self.__software_accelerated:
+                    logger.debug(
+                        "Software-Accelerated encoding is activated for this connection using x264."
+                    )
                 elif self.__jpeg_compression:
                     logger.debug(
                         "JPEG Frame-Compression is activated for this connection with Colorspace:`{}`, Quality:`{}`%, Fastdct:`{}`, and Fastupsample:`{}`.".format(
@@ -759,6 +789,27 @@ class SyncTransport:
                 logging=self.__logging,
             )
         return self.__nvidia_decoder
+
+    def __get_software_encoder(self, width: int, height: int):
+        if self.__software_encoder is None:
+            from ..utils.software_codec import SoftwareEncoder
+            self.__software_encoder = SoftwareEncoder(
+                width=width,
+                height=height,
+                bitrate=self.__gpu_bitrate,
+                codec="x264" if self.__gpu_codec in ["h264", "x264"] else "x265",
+                logging=self.__logging,
+            )
+        return self.__software_encoder
+
+    def __get_software_decoder(self):
+        if self.__software_decoder is None:
+            from ..utils.software_codec import SoftwareDecoder
+            self.__software_decoder = SoftwareDecoder(
+                codec="x264" if self.__gpu_codec in ["h264", "x264"] else "x265",
+                logging=self.__logging,
+            )
+        return self.__software_decoder
 
     def __recv_handler(self):
         frame = None
@@ -907,6 +958,42 @@ class SyncTransport:
                                 copy=self.__msg_copy,
                                 track=self.__msg_track,
                             )
+                        elif self.__software_accelerated:
+                            encoder = self.__get_software_encoder(
+                                return_data.shape[1], return_data.shape[0]
+                            )
+                            return_data = encoder.encode(return_data)
+
+                            return_dict = (
+                                dict(port=self.__port)
+                                if self.__multiclient_mode
+                                else dict()
+                            )
+
+                            return_dict.update(
+                                dict(
+                                    return_type=(type(local_return_data).__name__),
+                                    compression={
+                                        "type": "software",
+                                        "codec": self.__gpu_codec,
+                                        "width": local_return_data.shape[1],
+                                        "height": local_return_data.shape[0],
+                                    },
+                                    array_dtype="",
+                                    array_shape="",
+                                    data=None,
+                                )
+                            )
+
+                            self.__msg_socket.send_json(
+                                return_dict, self.__msg_flag | zmq.SNDMORE
+                            )
+                            self.__msg_socket.send(
+                                return_data,
+                                flags=self.__msg_flag,
+                                copy=self.__msg_copy,
+                                track=self.__msg_track,
+                            )
                         elif self.__jpeg_compression:
                             if self.__jpeg_compression_colorspace == "GRAY":
                                 if return_data.ndim == 2:
@@ -1026,6 +1113,22 @@ class SyncTransport:
                         self.__terminate.set()
                         raise RuntimeError(
                             "[SyncTransport:ERROR] :: Received NVENC frame decoding failed. "
+                            "Width: {}, Height: {}".format(
+                                compression_info.get("width"),
+                                compression_info.get("height")
+                            )
+                        )
+                elif isinstance(compression_info, dict) and compression_info.get("type") == "software":
+                    decoder = self.__get_software_decoder()
+                    frame = decoder.decode(
+                        bytes(msg_data),
+                        width=compression_info.get("width"),
+                        height=compression_info.get("height")
+                    )
+                    if frame is None:
+                        self.__terminate.set()
+                        raise RuntimeError(
+                            "[SyncTransport:ERROR] :: Received software frame decoding failed. "
                             "Width: {}, Height: {}".format(
                                 compression_info.get("width"),
                                 compression_info.get("height")
@@ -1154,6 +1257,33 @@ class SyncTransport:
                     terminate_flag=False,
                     compression={
                         "type": "nvenc",
+                        "codec": self.__gpu_codec,
+                        "width": original_shape[1],
+                        "height": original_shape[0],
+                    },
+                    message=message,
+                    pattern=str(self.__pattern),
+                    dtype="",
+                    shape="",
+                )
+            )
+
+            self.__msg_socket.send_json(msg_dict, self.__msg_flag | zmq.SNDMORE)
+            self.__msg_socket.send(
+                encoded_frame, flags=self.__msg_flag, copy=self.__msg_copy, track=self.__msg_track
+            )
+
+        elif self.__software_accelerated:
+            encoder = self.__get_software_encoder(frame.shape[1], frame.shape[0])
+            encoded_frame = encoder.encode(frame)
+
+            msg_dict = dict(port=self.__port) if self.__multiserver_mode else dict()
+
+            msg_dict.update(
+                dict(
+                    terminate_flag=False,
+                    compression={
+                        "type": "software",
                         "codec": self.__gpu_codec,
                         "width": original_shape[1],
                         "height": original_shape[0],
@@ -1310,6 +1440,22 @@ class SyncTransport:
                                     recv_compression.get("height")
                                 )
                             )
+                    elif isinstance(recv_compression, dict) and recv_compression.get("type") == "software":
+                        decoder = self.__get_software_decoder()
+                        recvd_data = decoder.decode(
+                            bytes(recv_array),
+                            width=recv_compression.get("width"),
+                            height=recv_compression.get("height")
+                        )
+                        if recvd_data is None:
+                            self.__terminate.set()
+                            raise RuntimeError(
+                                "[SyncTransport:ERROR] :: Received software frame decoding failed. "
+                                "Width: {}, Height: {}".format(
+                                    recv_compression.get("width"),
+                                    recv_compression.get("height")
+                                )
+                            )
                     elif recv_compression:
                         recvd_data = simplejpeg.decode_jpeg(
                             recv_array,
@@ -1394,6 +1540,14 @@ class SyncTransport:
         if self.__nvidia_decoder is not None:
             self.__nvidia_decoder.close()
             self.__nvidia_decoder = None
+
+        if self.__software_encoder is not None:
+            self.__software_encoder.close()
+            self.__software_encoder = None
+
+        if self.__software_decoder is not None:
+            self.__software_decoder.close()
+            self.__software_decoder = None
 
         if self.__receive_mode:
             if not (self.__queue is None) and self.__queue:

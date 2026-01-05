@@ -61,11 +61,14 @@ class AsyncTransport:
         import_dependency_safe("msgpack_numpy" if m is None else "")
 
         self.__gpu_accelerated = False
+        self.__software_accelerated = False
         self.__gpu_id = gpu_id
         self.__gpu_bitrate = gpu_bitrate
         self.__gpu_codec = gpu_codec
         self.__nvidia_encoder = None
         self.__nvidia_decoder = None
+        self.__software_encoder = None
+        self.__software_decoder = None
         self.__resolution = resolution
 
         if gpu_accelerated:
@@ -75,9 +78,27 @@ class AsyncTransport:
                     self.__gpu_accelerated = True
                     self.__logging and logger.info("GPU acceleration enabled with NVIDIA hardware encoding")
                 else:
-                    logger.warning("GPU acceleration requested but NVIDIA codec not available. Falling back to CPU.")
+                    logger.warning("GPU acceleration requested but NVIDIA codec not available. Checking software fallback.")
+                    try:
+                        from ..utils.software_codec import has_x264, SoftwareEncoder, SoftwareDecoder
+                        if has_x264():
+                            self.__software_accelerated = True
+                            self.__logging and logger.info("Software acceleration enabled with x264 encoding")
+                        else:
+                            logger.warning("x264 not available. Falling back to CPU.")
+                    except ImportError:
+                        logger.warning("Software codec not available. Falling back to CPU.")
             except ImportError as e:
-                logger.warning("GPU acceleration requested but PyNvVideoCodec not installed: {}. Falling back to CPU.".format(e))
+                logger.warning("GPU acceleration requested but PyNvVideoCodec not installed: {}. Checking software fallback.".format(e))
+                try:
+                    from ..utils.software_codec import has_x264, SoftwareEncoder, SoftwareDecoder
+                    if has_x264():
+                        self.__software_accelerated = True
+                        self.__logging and logger.info("Software acceleration enabled with x264 encoding")
+                    else:
+                        logger.warning("x264 not available. Falling back to CPU.")
+                except ImportError:
+                    logger.warning("Software codec not available. Falling back to CPU.")
 
         valid_messaging_patterns = {
             0: (zmq.PAIR, zmq.PAIR),
@@ -242,6 +263,27 @@ class AsyncTransport:
             )
         return self.__nvidia_decoder
 
+    def __get_software_encoder(self, width: int, height: int):
+        if self.__software_encoder is None:
+            from ..utils.software_codec import SoftwareEncoder
+            self.__software_encoder = SoftwareEncoder(
+                width=width,
+                height=height,
+                bitrate=self.__gpu_bitrate,
+                codec="x264" if self.__gpu_codec in ["h264", "x264"] else "x265",
+                logging=self.__logging,
+            )
+        return self.__software_encoder
+
+    def __get_software_decoder(self):
+        if self.__software_decoder is None:
+            from ..utils.software_codec import SoftwareDecoder
+            self.__software_decoder = SoftwareDecoder(
+                codec="x264" if self.__gpu_codec in ["h264", "x264"] else "x265",
+                logging=self.__logging,
+            )
+        return self.__software_decoder
+
     def launch(self) -> T:
         if self.__receive_mode:
             self.__logging and logger.debug(
@@ -301,6 +343,10 @@ class AsyncTransport:
                 logger.critical(
                     "Send Mode is successfully activated with GPU acceleration and ready to send data!"
                 )
+            elif self.__software_accelerated:
+                logger.critical(
+                    "Send Mode is successfully activated with software acceleration and ready to send data!"
+                )
             else:
                 logger.critical(
                     "Send Mode is successfully activated and ready to send data!"
@@ -358,6 +404,24 @@ class AsyncTransport:
                     bi_mode=self.__bi_mode,
                     data=data if not (data is None) else "",
                     gpu_accelerated=True,
+                    software_accelerated=False,
+                    gpu_codec=self.__gpu_codec,
+                    width=frame.shape[1],
+                    height=frame.shape[0],
+                )
+                data_enc = msgpack.packb(data_dict)
+                await self.__msg_socket.send(data_enc, flags=zmq.SNDMORE)
+                await self.__msg_socket.send_multipart([encoded_frame])
+            elif self.__software_accelerated:
+                encoder = self.__get_software_encoder(frame.shape[1], frame.shape[0])
+                encoded_frame = encoder.encode(frame)
+
+                data_dict = dict(
+                    terminate=False,
+                    bi_mode=self.__bi_mode,
+                    data=data if not (data is None) else "",
+                    gpu_accelerated=False,
+                    software_accelerated=True,
                     gpu_codec=self.__gpu_codec,
                     width=frame.shape[1],
                     height=frame.shape[0],
@@ -371,6 +435,7 @@ class AsyncTransport:
                     bi_mode=self.__bi_mode,
                     data=data if not (data is None) else "",
                     gpu_accelerated=False,
+                    software_accelerated=False,
                 )
                 data_enc = msgpack.packb(data_dict)
                 await self.__msg_socket.send(data_enc, flags=zmq.SNDMORE)
@@ -398,6 +463,25 @@ class AsyncTransport:
                         if decoded_frame is None:
                             raise RuntimeError(
                                 "[AsyncTransport:ERROR] :: Received NVENC frame decoding failed. "
+                                "Width: {}, Height: {}".format(
+                                    recvd_data.get("width"),
+                                    recvd_data.get("height")
+                                )
+                            )
+                        await self.__queue.put(decoded_frame)
+                    elif recvd_data.get("software_accelerated"):
+                        recvdframe_encoded = await asyncio.wait_for(
+                            self.__msg_socket.recv_multipart(), timeout=self.__timeout
+                        )
+                        decoder = self.__get_software_decoder()
+                        decoded_frame = decoder.decode(
+                            bytes(recvdframe_encoded[0]),
+                            width=recvd_data.get("width"),
+                            height=recvd_data.get("height")
+                        )
+                        if decoded_frame is None:
+                            raise RuntimeError(
+                                "[AsyncTransport:ERROR] :: Received software frame decoding failed. "
                                 "Width: {}, Height: {}".format(
                                     recvd_data.get("width"),
                                     recvd_data.get("height")
@@ -458,6 +542,8 @@ class AsyncTransport:
             )
             if self.__gpu_accelerated:
                 logger.critical("Receive Mode is activated successfully with GPU acceleration!")
+            elif self.__software_accelerated:
+                logger.critical("Receive Mode is activated successfully with software acceleration!")
             else:
                 logger.critical("Receive Mode is activated successfully!")
         except Exception as e:
@@ -515,6 +601,21 @@ class AsyncTransport:
                             data.get("height")
                         )
                     )
+            elif data.get("software_accelerated"):
+                decoder = self.__get_software_decoder()
+                frame = decoder.decode(
+                    bytes(framemsg_encoded[0]),
+                    width=data.get("width"),
+                    height=data.get("height")
+                )
+                if frame is None:
+                    raise RuntimeError(
+                        "[AsyncTransport:ERROR] :: Received software frame decoding failed. "
+                        "Width: {}, Height: {}".format(
+                            data.get("width"),
+                            data.get("height")
+                        )
+                    )
             else:
                 frame = msgpack.unpackb(
                     framemsg_encoded[0], use_list=False, object_hook=m.decode
@@ -545,6 +646,25 @@ class AsyncTransport:
                                 return_type=(type(return_data).__name__),
                                 return_data=None,
                                 gpu_accelerated=True,
+                                software_accelerated=False,
+                                gpu_codec=self.__gpu_codec,
+                                width=return_data.shape[1],
+                                height=return_data.shape[0],
+                            )
+                            rettype_enc = msgpack.packb(rettype_dict)
+                            await self.__msg_socket.send(rettype_enc, flags=zmq.SNDMORE)
+                            await self.__msg_socket.send_multipart([encoded_return])
+                        elif self.__software_accelerated:
+                            encoder = self.__get_software_encoder(
+                                return_data.shape[1], return_data.shape[0]
+                            )
+                            encoded_return = encoder.encode(return_data)
+
+                            rettype_dict = dict(
+                                return_type=(type(return_data).__name__),
+                                return_data=None,
+                                gpu_accelerated=False,
+                                software_accelerated=True,
                                 gpu_codec=self.__gpu_codec,
                                 width=return_data.shape[1],
                                 height=return_data.shape[0],
@@ -557,6 +677,7 @@ class AsyncTransport:
                                 return_type=(type(return_data).__name__),
                                 return_data=None,
                                 gpu_accelerated=False,
+                                software_accelerated=False,
                             )
                             rettype_enc = msgpack.packb(rettype_dict)
                             await self.__msg_socket.send(rettype_enc, flags=zmq.SNDMORE)
@@ -570,6 +691,7 @@ class AsyncTransport:
                                 return_data if not (return_data is None) else ""
                             ),
                             gpu_accelerated=False,
+                            software_accelerated=False,
                         )
                         retdata_enc = msgpack.packb(return_dict)
                         await self.__msg_socket.send(retdata_enc)
@@ -630,6 +752,14 @@ class AsyncTransport:
         if self.__nvidia_decoder is not None:
             self.__nvidia_decoder.close()
             self.__nvidia_decoder = None
+
+        if self.__software_encoder is not None:
+            self.__software_encoder.close()
+            self.__software_encoder = None
+
+        if self.__software_decoder is not None:
+            self.__software_decoder.close()
+            self.__software_decoder = None
 
         if self.__receive_mode:
             self.__terminate = True
