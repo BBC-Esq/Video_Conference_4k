@@ -22,6 +22,9 @@ keywords = [
     "4K video",
     "audio processing",
     "real-time communication",
+    "NVIDIA",
+    "GPU acceleration",
+    "NVENC",
 ]
 classifiers = [
     "Development Status :: 5 - Production/Stable",
@@ -56,6 +59,11 @@ dependencies = [
     "uvloop; platform_system != 'Windows'",
     "aiortc",
     "sounddevice",
+]
+
+[project.optional-dependencies]
+gpu = [
+    "PyNvVideoCodec>=2.0",
 ]
 
 [project.urls]
