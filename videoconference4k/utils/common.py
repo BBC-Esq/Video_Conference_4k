@@ -26,25 +26,35 @@ from numpy.typing import NDArray
 
 
 def set_cuda_paths():
+    import os
+    import sys
+    from pathlib import Path
+    
     venv_base = Path(sys.executable).parent.parent
     nvidia_base = venv_base / 'Lib' / 'site-packages' / 'nvidia'
     if not nvidia_base.exists():
         return
+    
     paths_to_add = [
-        str(nvidia_base / 'cuda_runtime' / 'bin'),
-        str(nvidia_base / 'cuda_runtime' / 'lib' / 'x64'),
-        str(nvidia_base / 'cuda_runtime' / 'include'),
-        str(nvidia_base / 'cublas' / 'bin'),
-        str(nvidia_base / 'cudnn' / 'bin'),
-        str(nvidia_base / 'cuda_nvrtc' / 'bin'),
-        str(nvidia_base / 'cuda_nvcc' / 'bin'),
+        nvidia_base / 'cuda_runtime' / 'bin',
+        nvidia_base / 'cublas' / 'bin',
+        nvidia_base / 'cuda_nvrtc' / 'bin',
     ]
+    
+    # Filter to only existing paths
+    paths_to_add = [str(p) for p in paths_to_add if p.exists()]
+    
+    # Add to PATH environment variable
     current_path = os.environ.get('PATH', '')
     os.environ['PATH'] = os.pathsep.join(paths_to_add + [current_path])
-    triton_cuda_path = nvidia_base / 'cuda_runtime'
-    current_cuda = os.environ.get('CUDA_PATH', '')
-    os.environ['CUDA_PATH'] = os.pathsep.join([str(triton_cuda_path), current_cuda])
-
+    
+    # For Python 3.8+ on Windows, also use os.add_dll_directory
+    if sys.platform == 'win32' and hasattr(os, 'add_dll_directory'):
+        for path in paths_to_add:
+            try:
+                os.add_dll_directory(path)
+            except OSError:
+                pass
 
 set_cuda_paths()
 

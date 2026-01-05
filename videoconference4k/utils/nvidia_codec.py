@@ -3,7 +3,10 @@ import logging as log
 from typing import Optional, Tuple
 from numpy.typing import NDArray
 
-from .common import logger_handler, import_dependency_safe
+from .common import logger_handler, import_dependency_safe, set_cuda_paths
+
+# Ensure CUDA paths are set before attempting PyNvVideoCodec import
+set_cuda_paths()
 
 nvc = import_dependency_safe("PyNvVideoCodec", error="silent")
 
@@ -12,17 +15,15 @@ logger.propagate = False
 logger.addHandler(logger_handler())
 logger.setLevel(log.DEBUG)
 
-
 def has_nvidia_codec() -> bool:
     if nvc is None:
         return False
     try:
-        encoder = nvc.CreateEncoder(64, 64, "NV12", True, codec="h264")
+        encoder = nvc.CreateEncoder(256, 256, "NV12", True, codec="h264")
         del encoder
         return True
     except Exception:
         return False
-
 
 def get_nvidia_info() -> dict:
     info = {
