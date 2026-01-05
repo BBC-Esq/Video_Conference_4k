@@ -61,11 +61,6 @@ dependencies = [
     "sounddevice",
 ]
 
-[project.optional-dependencies]
-gpu = [
-    "PyNvVideoCodec>=2.0",
-]
-
 [project.urls]
 Homepage = "https://github.com/BBC-Esq/Video_Conference_4k"
 Repository = "https://github.com/BBC-Esq/Video_Conference_4k"

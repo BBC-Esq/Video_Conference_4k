@@ -26,7 +26,7 @@ pip install git+https://github.com/BBC-Esq/Video_Conference_4k.git@main
 
 **With NVIDIA GPU acceleration (requires NVIDIA GPU and CUDA):**
 ```bash
-pip install "git+https://github.com/BBC-Esq/Video_Conference_4k.git@main#egg=videoconference4k[gpu]"
+pip install PyNvVideoCodec
 ```
 
 ---
