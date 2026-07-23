@@ -1,8 +1,31 @@
+import functools
+import shutil
 import subprocess
 import threading
 from abc import ABC, abstractmethod
 from typing import Optional
 from numpy.typing import NDArray
+
+
+@functools.lru_cache(maxsize=1)
+def get_ffmpeg_path() -> Optional[str]:
+    return shutil.which("ffmpeg")
+
+
+@functools.lru_cache(maxsize=1)
+def get_ffmpeg_encoders() -> str:
+    if get_ffmpeg_path() is None:
+        return ""
+    try:
+        result = subprocess.run(
+            ["ffmpeg", "-hide_banner", "-encoders"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        return result.stdout
+    except Exception:
+        return ""
 
 
 class BaseEncoder(ABC):

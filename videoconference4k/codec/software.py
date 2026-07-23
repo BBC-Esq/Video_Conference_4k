@@ -1,48 +1,27 @@
 import subprocess
-import shutil
 import threading
 from typing import Optional
 import numpy as np
 from numpy.typing import NDArray
 
-from .base import BaseDecoder, FFmpegPipeEncoder, FFmpegSyncEncoder
+from .base import (
+    BaseDecoder,
+    FFmpegPipeEncoder,
+    FFmpegSyncEncoder,
+    get_ffmpeg_path,
+    get_ffmpeg_encoders,
+)
 from ..utils.common import get_logger
 
 logger = get_logger("SoftwareCodec")
 
 
 def has_x264() -> bool:
-    ffmpeg_path = shutil.which("ffmpeg")
-    if not ffmpeg_path:
-        return False
-
-    try:
-        result = subprocess.run(
-            ["ffmpeg", "-hide_banner", "-encoders"],
-            capture_output=True,
-            text=True,
-            timeout=5
-        )
-        return "libx264" in result.stdout
-    except Exception:
-        return False
+    return "libx264" in get_ffmpeg_encoders()
 
 
 def has_x265() -> bool:
-    ffmpeg_path = shutil.which("ffmpeg")
-    if not ffmpeg_path:
-        return False
-
-    try:
-        result = subprocess.run(
-            ["ffmpeg", "-hide_banner", "-encoders"],
-            capture_output=True,
-            text=True,
-            timeout=5
-        )
-        return "libx265" in result.stdout
-    except Exception:
-        return False
+    return "libx265" in get_ffmpeg_encoders()
 
 
 def has_software_codec() -> bool:
@@ -56,32 +35,22 @@ def get_software_info() -> dict:
         "encoders": [],
     }
 
-    ffmpeg_path = shutil.which("ffmpeg")
+    ffmpeg_path = get_ffmpeg_path()
     if not ffmpeg_path:
         return info
 
     info["ffmpeg_found"] = True
     info["ffmpeg_path"] = ffmpeg_path
 
-    try:
-        result = subprocess.run(
-            ["ffmpeg", "-hide_banner", "-encoders"],
-            capture_output=True,
-            text=True,
-            timeout=5
-        )
+    encoders_output = get_ffmpeg_encoders()
+    encoders = []
+    if "libx264" in encoders_output:
+        encoders.append("x264")
+    if "libx265" in encoders_output:
+        encoders.append("x265")
 
-        encoders = []
-        if "libx264" in result.stdout:
-            encoders.append("x264")
-        if "libx265" in result.stdout:
-            encoders.append("x265")
-
-        info["encoders"] = encoders
-        info["available"] = len(encoders) > 0
-
-    except Exception as e:
-        info["error"] = str(e)
+    info["encoders"] = encoders
+    info["available"] = len(encoders) > 0
 
     return info
 

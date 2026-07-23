@@ -1,29 +1,20 @@
-import subprocess
-import shutil
 from typing import Optional
 from numpy.typing import NDArray
 
-from .base import BaseDecoder, FFmpegPipeEncoder, FFmpegSyncEncoder
+from .base import (
+    BaseDecoder,
+    FFmpegPipeEncoder,
+    FFmpegSyncEncoder,
+    get_ffmpeg_path,
+    get_ffmpeg_encoders,
+)
 from ..utils.common import get_logger
 
 logger = get_logger("IntelCodec")
 
 
 def has_intel_codec() -> bool:
-    ffmpeg_path = shutil.which("ffmpeg")
-    if not ffmpeg_path:
-        return False
-
-    try:
-        result = subprocess.run(
-            ["ffmpeg", "-hide_banner", "-encoders"],
-            capture_output=True,
-            text=True,
-            timeout=5
-        )
-        return "h264_qsv" in result.stdout
-    except Exception:
-        return False
+    return "h264_qsv" in get_ffmpeg_encoders()
 
 
 def get_intel_info() -> dict:
@@ -33,36 +24,25 @@ def get_intel_info() -> dict:
         "encoders": [],
     }
 
-    ffmpeg_path = shutil.which("ffmpeg")
+    ffmpeg_path = get_ffmpeg_path()
     if not ffmpeg_path:
         return info
 
     info["ffmpeg_found"] = True
     info["ffmpeg_path"] = ffmpeg_path
 
-    try:
-        result = subprocess.run(
-            ["ffmpeg", "-hide_banner", "-encoders"],
-            capture_output=True,
-            text=True,
-            timeout=5
-        )
+    qsv_encoders = []
+    for line in get_ffmpeg_encoders().split('\n'):
+        if '_qsv' in line.lower():
+            if 'h264_qsv' in line:
+                qsv_encoders.append("h264")
+            elif 'hevc_qsv' in line:
+                qsv_encoders.append("hevc")
+            elif 'av1_qsv' in line:
+                qsv_encoders.append("av1")
 
-        qsv_encoders = []
-        for line in result.stdout.split('\n'):
-            if '_qsv' in line.lower():
-                if 'h264_qsv' in line:
-                    qsv_encoders.append("h264")
-                elif 'hevc_qsv' in line:
-                    qsv_encoders.append("hevc")
-                elif 'av1_qsv' in line:
-                    qsv_encoders.append("av1")
-
-        info["encoders"] = qsv_encoders
-        info["available"] = len(qsv_encoders) > 0
-
-    except Exception as e:
-        info["error"] = str(e)
+    info["encoders"] = qsv_encoders
+    info["available"] = len(qsv_encoders) > 0
 
     return info
 
