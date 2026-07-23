@@ -1,8 +1,6 @@
 import subprocess
 import shutil
-import tempfile
-import os
-import time
+import threading
 from typing import Optional
 import numpy as np
 from numpy.typing import NDArray
@@ -227,21 +225,6 @@ class SoftwareEncoderSync(FFmpegSyncEncoder):
         return cmd
 
 
-def _safe_unlink(filepath: str, max_retries: int = 3, retry_delay: float = 0.1) -> None:
-    for attempt in range(max_retries):
-        try:
-            if os.path.exists(filepath):
-                os.unlink(filepath)
-            return
-        except PermissionError:
-            if attempt < max_retries - 1:
-                time.sleep(retry_delay)
-            else:
-                pass
-        except Exception:
-            return
-
-
 class SoftwareDecoder(BaseDecoder):
 
     def __init__(
@@ -252,6 +235,14 @@ class SoftwareDecoder(BaseDecoder):
         self._logging = logging
         self._codec = codec.lower()
         self._is_hevc = "265" in self._codec or "hevc" in self._codec
+        self._process = None
+        self._width = None
+        self._height = None
+        self._frame_size = None
+        self._out_buffer = bytearray()
+        self._out_lock = threading.Lock()
+        self._stdout_thread = None
+        self._stderr_thread = None
 
         self._logging and logger.debug(
             "SoftwareDecoder initialized: codec={}".format(codec)
@@ -261,55 +252,130 @@ class SoftwareDecoder(BaseDecoder):
     def codec_type(self) -> str:
         return "software"
 
+    def _start_process(self, width: int, height: int) -> None:
+        self._width = width
+        self._height = height
+        self._frame_size = width * height * 3
+
+        cmd = [
+            "ffmpeg",
+            "-hide_banner",
+            "-loglevel", "error",
+            "-probesize", "32",
+            "-analyzeduration", "0",
+            "-thread_type", "slice",
+            "-f", "hevc" if self._is_hevc else "h264",
+            "-i", "pipe:0",
+            "-f", "rawvideo",
+            "-pix_fmt", "bgr24",
+            "-s", "{}x{}".format(width, height),
+            "pipe:1"
+        ]
+
+        self._process = subprocess.Popen(
+            cmd,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            bufsize=self._frame_size * 2,
+        )
+
+        self._stdout_thread = threading.Thread(
+            target=self._drain_stdout, args=(self._process.stdout,), daemon=True
+        )
+        self._stderr_thread = threading.Thread(
+            target=self._drain_stderr, args=(self._process.stderr,), daemon=True
+        )
+        self._stdout_thread.start()
+        self._stderr_thread.start()
+
+    def _drain_stdout(self, stream) -> None:
+        try:
+            while True:
+                chunk = stream.read1(1048576)
+                if not chunk:
+                    break
+                with self._out_lock:
+                    self._out_buffer.extend(chunk)
+        except Exception:
+            pass
+
+    def _drain_stderr(self, stream) -> None:
+        try:
+            while stream.read1(65536):
+                pass
+        except Exception:
+            pass
+
     def decode(
         self,
         encoded_data: bytes,
         width: int,
         height: int
     ) -> Optional[NDArray]:
-        if not encoded_data:
+        if not width or not height:
             return None
 
-        suffix = ".hevc" if self._is_hevc else ".h264"
-        tmp_input = None
+        if self._process is not None and (width != self._width or height != self._height):
+            self.close()
 
-        try:
-            with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp_in:
-                tmp_in.write(encoded_data)
-                tmp_input = tmp_in.name
+        if self._process is None or self._process.poll() is not None:
+            if self._process is not None:
+                self.close()
+            try:
+                self._start_process(width, height)
+            except Exception as e:
+                self._logging and logger.error("Failed to start decoder: {}".format(e))
+                self._process = None
+                return None
 
-            cmd = [
-                "ffmpeg",
-                "-hide_banner",
-                "-loglevel", "error",
-                "-i", tmp_input,
-                "-f", "rawvideo",
-                "-pix_fmt", "bgr24",
-                "-frames:v", "1",
-                "pipe:1"
-            ]
+        if encoded_data:
+            try:
+                self._process.stdin.write(encoded_data)
+                self._process.stdin.flush()
+            except Exception as e:
+                self._logging and logger.error("Decode error: {}".format(e))
+                self.close()
+                return None
 
-            process = subprocess.Popen(
-                cmd,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-            )
+        frame_bytes = None
+        with self._out_lock:
+            if len(self._out_buffer) >= self._frame_size:
+                frame_bytes = bytes(self._out_buffer[:self._frame_size])
+                del self._out_buffer[:self._frame_size]
 
-            output, stderr = process.communicate(timeout=10)
-
-            if output and len(output) == width * height * 3:
-                frame = np.frombuffer(output, dtype=np.uint8).reshape((height, width, 3))
-                return frame
-
+        if frame_bytes is None:
             return None
 
-        except Exception as e:
-            self._logging and logger.error("Decode error: {}".format(e))
-            return None
-
-        finally:
-            if tmp_input is not None:
-                _safe_unlink(tmp_input)
+        return np.frombuffer(frame_bytes, dtype=np.uint8).reshape((height, width, 3))
 
     def close(self) -> None:
         self._logging and logger.debug("Closing SoftwareDecoder")
+
+        if self._process is not None:
+            try:
+                self._process.stdin.close()
+            except Exception:
+                pass
+            try:
+                self._process.terminate()
+                self._process.wait(timeout=2)
+            except Exception:
+                try:
+                    self._process.kill()
+                except Exception:
+                    pass
+            self._process = None
+
+        if self._stdout_thread is not None:
+            self._stdout_thread.join(timeout=1)
+            self._stdout_thread = None
+
+        if self._stderr_thread is not None:
+            self._stderr_thread.join(timeout=1)
+            self._stderr_thread = None
+
+        with self._out_lock:
+            self._out_buffer.clear()
+        self._width = None
+        self._height = None

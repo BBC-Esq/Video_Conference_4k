@@ -295,13 +295,8 @@ class AsyncTransport:
                             bytes(recvdframe_encoded[0]), comp_metadata
                         )
 
-                        if decoded_frame is None:
-                            raise RuntimeError(
-                                "[AsyncTransport:ERROR] :: Received frame decoding failed. Width: {}, Height: {}".format(
-                                    recvd_data.get("width"), recvd_data.get("height")
-                                )
-                            )
-                        await self.__queue.put(decoded_frame)
+                        if decoded_frame is not None:
+                            await self.__queue.put(decoded_frame)
                     elif recvd_data.get("return_type") == "ndarray":
                         recvdframe_encoded = await asyncio.wait_for(
                             self.__msg_socket.recv_multipart(), timeout=self.__timeout
@@ -380,13 +375,6 @@ class AsyncTransport:
                 }
 
                 frame = self.__compression_handler.decode_frame(bytes(framemsg_encoded[0]), comp_metadata)
-
-                if frame is None:
-                    raise RuntimeError(
-                        "[AsyncTransport:ERROR] :: Received frame decoding failed. Width: {}, Height: {}".format(
-                            data.get("width"), data.get("height")
-                        )
-                    )
             else:
                 frame = msgpack.unpackb(framemsg_encoded[0], use_list=False, object_hook=m.decode)
 
@@ -446,10 +434,11 @@ class AsyncTransport:
                         bytes("Data received on client: {} !".format(self.__id), "utf-8")
                     )
 
-            if self.__bi_mode:
-                yield (data.get("data"), frame) if data.get("data") else (None, frame)
-            else:
-                yield frame
+            if frame is not None:
+                if self.__bi_mode:
+                    yield (data.get("data"), frame) if data.get("data") else (None, frame)
+                else:
+                    yield frame
             await asyncio.sleep(0)
 
     async def __frame_generator(self):

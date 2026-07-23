@@ -734,8 +734,8 @@ class SyncTransport:
                     self.__jpeg_compression_fastupsample,
                 )
                 if frame is None:
-                    self.__terminate.set()
-                    raise RuntimeError("[SyncTransport:ERROR] :: Frame decoding failed")
+                    self.__logging and logger.debug("Frame not yet decodable, skipping.")
+                    continue
             else:
                 frame_buffer = np.frombuffer(msg_data, dtype=msg_json["dtype"])
                 frame = frame_buffer.reshape(msg_json["shape"])
@@ -903,8 +903,7 @@ class SyncTransport:
                             self.__jpeg_compression_fastupsample,
                         )
                         if recvd_data is None:
-                            self.__terminate.set()
-                            raise RuntimeError("[SyncTransport:ERROR] :: Return frame decoding failed")
+                            self.__logging and logger.debug("Return frame not yet decodable, skipping.")
                     else:
                         recvd_data = np.frombuffer(
                             recv_array, dtype=recv_json["array_dtype"]
