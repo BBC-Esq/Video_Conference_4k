@@ -340,8 +340,6 @@ class SyncTransport:
                     )
                 )
 
-        port = validate_port(port)
-
         if self.__receive_mode:
             if self.__multiserver_mode:
                 if port is None or not isinstance(port, (tuple, list)):
@@ -361,6 +359,8 @@ class SyncTransport:
                 self.__port = port
             else:
                 pass
+
+            port = validate_port(port)
 
             try:
                 self.__msg_socket = self.__msg_context.socket(msg_pattern[1])
@@ -488,6 +488,8 @@ class SyncTransport:
                 self.__port_buffer = []
             else:
                 pass
+
+            port = validate_port(port)
 
             try:
                 self.__msg_socket = self.__msg_context.socket(msg_pattern[0])

@@ -73,7 +73,7 @@ class BaseConference:
                 input_device=microphone_id,
                 sample_rate=48000,
                 channels=1,
-                enable_output=True,
+                enable_output=False,
                 logging=logging,
             )
 

@@ -86,7 +86,8 @@ def logger_handler():
 def get_logger(name: str) -> log.Logger:
     logger = log.getLogger(name)
     logger.propagate = False
-    logger.addHandler(logger_handler())
+    if not logger.handlers:
+        logger.addHandler(logger_handler())
     logger.setLevel(log.DEBUG)
     return logger
 
@@ -201,9 +202,8 @@ def import_dependency_safe(
             module_to_get = module
         version = get_module_version(module_to_get)
         if parse(version) < parse(min_version):
-            msg = """Unsupported version '{}' found. VideoConference4k requires '{}' dependency installed with version '{}' or greater. 
-            Update it with  `pip install -U {}` command.""".format(
-                parent_module, min_version, version, install_name
+            msg = "Unsupported version '{}' found. VideoConference4k requires '{}' dependency installed with version '{}' or greater. Update it with `pip install -U {}` command.".format(
+                version, parent_module, min_version, install_name
             )
             if error == "silent":
                 return None
