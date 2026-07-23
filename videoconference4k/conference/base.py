@@ -34,6 +34,25 @@ def decompress_sdp(code: str) -> dict:
         ) from e
 
 
+def make_turn_server(
+    host: str,
+    username: str,
+    credential: str,
+    port: int = 3478,
+    tls: bool = False,
+    transport: Optional[str] = None,
+) -> dict:
+    scheme = "turns" if tls else "turn"
+    url = "{}:{}:{}".format(scheme, host, port)
+    if transport:
+        url = "{}?transport={}".format(url, transport)
+    return {
+        "urls": [url],
+        "username": username,
+        "credential": credential,
+    }
+
+
 class BaseConference:
 
     def __init__(

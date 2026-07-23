@@ -28,10 +28,16 @@ class PeerConference(BaseConference, CallbackRegistrar):
         camera_id: int = 0,
         microphone_id: Optional[int] = None,
         use_stun: bool = True,
+        turn_servers: Optional[list] = None,
         logging: bool = False,
         **options: dict
     ):
-        ice_servers = STUN_ONLY_SERVERS if use_stun else []
+        ice_servers = list(STUN_ONLY_SERVERS) if use_stun else []
+        if turn_servers:
+            ice_servers = ice_servers + list(turn_servers)
+            logging and logger.debug(
+                "TURN relay configured with {} server(s).".format(len(turn_servers))
+            )
 
         BaseConference.__init__(
             self,

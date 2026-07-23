@@ -5,6 +5,7 @@ from .base import (
     CallbackRegistrar,
     compress_sdp,
     decompress_sdp,
+    make_turn_server,
     STUN_ONLY_SERVERS,
 )
 
@@ -15,5 +16,6 @@ __all__ = [
     "CallbackRegistrar",
     "compress_sdp",
     "decompress_sdp",
+    "make_turn_server",
     "STUN_ONLY_SERVERS",
 ]

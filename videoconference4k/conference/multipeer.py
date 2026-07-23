@@ -26,9 +26,18 @@ class MultiPeerConference(BaseConference):
         camera_id: int = 0,
         microphone_id: Optional[int] = None,
         max_peers: int = 3,
+        use_stun: bool = True,
+        turn_servers: Optional[list] = None,
         logging: bool = False,
         **options: dict
     ):
+        ice_servers = list(STUN_ONLY_SERVERS) if use_stun else []
+        if turn_servers:
+            ice_servers = ice_servers + list(turn_servers)
+            logging and logger.debug(
+                "TURN relay configured with {} server(s).".format(len(turn_servers))
+            )
+
         BaseConference.__init__(
             self,
             resolution=resolution,
@@ -36,7 +45,7 @@ class MultiPeerConference(BaseConference):
             enable_audio=enable_audio,
             camera_id=camera_id,
             microphone_id=microphone_id,
-            ice_servers=STUN_ONLY_SERVERS,
+            ice_servers=ice_servers,
             logging=logging,
             **options
         )
