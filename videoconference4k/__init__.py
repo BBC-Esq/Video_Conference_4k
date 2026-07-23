@@ -1,7 +1,7 @@
 from .version import __version__
 from .capture import VideoCapture, AudioCapture, probe_camera
 from .stream import VideoStream
-from .net import SyncTransport, AsyncTransport
+from .net import SyncTransport, AsyncTransport, AudioTransport
 from .rtc import RTCConnection
 from .conference import PeerConference, MultiPeerConference, make_turn_server
 
@@ -14,6 +14,7 @@ __all__ = [
     "VideoStream",
     "SyncTransport",
     "AsyncTransport",
+    "AudioTransport",
     "RTCConnection",
     "PeerConference",
     "MultiPeerConference",

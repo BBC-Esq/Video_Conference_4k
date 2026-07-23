@@ -1,5 +1,6 @@
 from .sync import SyncTransport
 from .async_ import AsyncTransport
+from .audio import AudioTransport
 from .compression import CompressionHandler, CompressionType
 from .base import (
     validate_pattern,
@@ -22,6 +23,7 @@ from .base import (
 __all__ = [
     "SyncTransport",
     "AsyncTransport",
+    "AudioTransport",
     "CompressionHandler",
     "CompressionType",
     "validate_pattern",
