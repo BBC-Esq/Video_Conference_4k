@@ -22,11 +22,53 @@ if aiortc is not None:
         RTCSessionDescription,
         RTCConfiguration,
         RTCIceServer,
+        RTCRtpSender,
     )
 
 logger = get_logger("RTCConnection")
 
 T = TypeVar("T", bound="RTCConnection")
+
+
+def _raise_aiortc_ceilings(max_bitrate: int, framerate: int) -> None:
+    if aiortc is None:
+        return
+    from aiortc.codecs import h264
+
+    if max_bitrate and int(max_bitrate) > h264.MAX_BITRATE:
+        h264.MAX_BITRATE = int(max_bitrate)
+    if max_bitrate:
+        h264.DEFAULT_BITRATE = max(
+            h264.MIN_BITRATE, min(int(max_bitrate), h264.MAX_BITRATE)
+        )
+    if framerate and int(framerate) > h264.MAX_FRAME_RATE:
+        h264.MAX_FRAME_RATE = int(framerate)
+        try:
+            from aiortc.codecs import vpx
+
+            if int(framerate) > vpx.MAX_FRAME_RATE:
+                vpx.MAX_FRAME_RATE = int(framerate)
+        except Exception:
+            pass
+
+
+def _prefer_h264(pc) -> None:
+    if aiortc is None:
+        return
+    try:
+        capabilities = RTCRtpSender.getCapabilities("video").codecs
+    except Exception:
+        return
+    preferred = [c for c in capabilities if c.mimeType == "video/H264"]
+    preferred += [c for c in capabilities if c.mimeType == "video/rtx"]
+    if not preferred:
+        return
+    for transceiver in pc.getTransceivers():
+        if transceiver.kind == "video":
+            try:
+                transceiver.setCodecPreferences(preferred)
+            except Exception:
+                pass
 
 AUDIO_SPECIFIC_OPTIONS = {
     "input_device",
@@ -49,6 +91,7 @@ class RTCConnection:
         video_source: Any = None,
         audio_source: Union[AudioCapture, int, None] = None,
         framerate: Union[int, float] = 30,
+        video_bitrate: int = 8000000,
         sample_rate: int = 48000,
         audio_channels: int = 1,
         enable_video: bool = True,
@@ -60,6 +103,9 @@ class RTCConnection:
         self.__logging = logging if isinstance(logging, bool) else False
 
         log_version(logging=self.__logging)
+
+        self.__video_bitrate = video_bitrate
+        _raise_aiortc_ceilings(video_bitrate, framerate)
 
         import_dependency_safe("aiortc" if aiortc is None else "")
 
@@ -311,6 +357,8 @@ class RTCConnection:
             )
             self.__pc.addTrack(self.__local_audio_track)
             self.__logging and logger.debug("Added local audio track.")
+
+        _prefer_h264(self.__pc)
 
     async def __create_offer_async(self) -> dict:
         await self.__create_peer_connection()
