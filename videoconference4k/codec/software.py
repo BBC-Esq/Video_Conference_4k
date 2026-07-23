@@ -104,6 +104,8 @@ class SoftwareEncoder(FFmpegPipeEncoder):
 
     def _build_ffmpeg_cmd(self) -> list:
         bitrate_k = self._bitrate // 1000
+        framerate = self._framerate if self._framerate > 0 else 30
+        bufsize_k = max(1, bitrate_k // framerate)
 
         cmd = [
             "ffmpeg",
@@ -118,6 +120,8 @@ class SoftwareEncoder(FFmpegPipeEncoder):
             "-preset", self._preset,
             "-tune", self._tune,
             "-b:v", "{}k".format(bitrate_k),
+            "-maxrate", "{}k".format(bitrate_k),
+            "-bufsize", "{}k".format(bufsize_k),
             "-g", str(self._framerate),
             "-f", "hevc" if self._is_hevc else "h264",
             "pipe:1"
@@ -172,6 +176,8 @@ class SoftwareEncoderSync(FFmpegSyncEncoder):
 
     def _build_ffmpeg_cmd(self) -> list:
         bitrate_k = self._bitrate // 1000
+        framerate = self._framerate if self._framerate > 0 else 30
+        bufsize_k = max(1, bitrate_k // framerate)
 
         cmd = [
             "ffmpeg",
@@ -186,6 +192,8 @@ class SoftwareEncoderSync(FFmpegSyncEncoder):
             "-preset", self._preset,
             "-tune", self._tune,
             "-b:v", "{}k".format(bitrate_k),
+            "-maxrate", "{}k".format(bitrate_k),
+            "-bufsize", "{}k".format(bufsize_k),
             "-g", str(self._framerate),
             "-f", "hevc" if self._is_hevc else "h264",
             "pipe:1"

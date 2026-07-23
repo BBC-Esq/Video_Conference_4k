@@ -98,18 +98,27 @@ class NvidiaEncoder(BaseEncoder):
         encoder_params = {
             "preset": preset,
             "tuning_info": tuning,
-            "frame_rate": framerate,
-            "gop_length": framerate,
+            "fps": framerate,
+            "gop": framerate,
+            "num_max_bframes": 0,
+            "repeatspspps": 1,
+            "lookahead": 0,
         }
 
+        max_bitrate = bitrate
         if rate_control.lower() == "cbr":
-            encoder_params["rate_control_mode"] = "cbr"
-            encoder_params["average_bit_rate"] = bitrate
-            encoder_params["max_bit_rate"] = bitrate
+            encoder_params["rc"] = "cbr"
+            encoder_params["bitrate"] = bitrate
+            encoder_params["maxbitrate"] = bitrate
         elif rate_control.lower() == "vbr":
-            encoder_params["rate_control_mode"] = "vbr"
-            encoder_params["average_bit_rate"] = bitrate
-            encoder_params["max_bit_rate"] = int(bitrate * 1.5)
+            max_bitrate = int(bitrate * 1.5)
+            encoder_params["rc"] = "vbr"
+            encoder_params["bitrate"] = bitrate
+            encoder_params["maxbitrate"] = max_bitrate
+
+        if framerate > 0:
+            encoder_params["vbvbufsize"] = int(max_bitrate / framerate)
+            encoder_params["vbvinit"] = int(max_bitrate / framerate)
 
         if gpu_id > 0:
             encoder_params["gpu_id"] = gpu_id
@@ -178,7 +187,12 @@ class NvidiaEncoder(BaseEncoder):
     def flush(self) -> bytes:
         if self._encoder is None:
             return b''
-        flushed = self._encoder.Flush()
+        if hasattr(self._encoder, "EndEncode"):
+            flushed = self._encoder.EndEncode()
+        elif hasattr(self._encoder, "Flush"):
+            flushed = self._encoder.Flush()
+        else:
+            return b''
         if flushed:
             if isinstance(flushed, list):
                 return b''.join(bytes(pkt) for pkt in flushed)

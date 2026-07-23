@@ -91,6 +91,8 @@ class IntelEncoder(FFmpegPipeEncoder):
 
         ffmpeg_codec = codec_map.get(self._codec.lower(), "h264_qsv")
         bitrate_k = self._bitrate // 1000
+        framerate = self._framerate if self._framerate > 0 else 30
+        bufsize_k = max(1, bitrate_k // framerate)
 
         cmd = [
             "ffmpeg",
@@ -109,14 +111,22 @@ class IntelEncoder(FFmpegPipeEncoder):
                 "-b:v", "{}k".format(bitrate_k),
                 "-maxrate", "{}k".format(bitrate_k),
                 "-minrate", "{}k".format(bitrate_k),
-                "-bufsize", "{}k".format(bitrate_k * 2),
+                "-bufsize", "{}k".format(bufsize_k),
             ])
         else:
             cmd.extend([
                 "-b:v", "{}k".format(bitrate_k),
                 "-maxrate", "{}k".format(int(bitrate_k * 1.5)),
-                "-bufsize", "{}k".format(bitrate_k * 2),
+                "-bufsize", "{}k".format(bufsize_k),
             ])
+
+        cmd.extend([
+            "-async_depth", "1",
+            "-low_delay_brc", "1",
+            "-forced_idr", "1",
+        ])
+        if self._codec.lower() == "h264":
+            cmd.extend(["-vcm", "1"])
 
         cmd.extend([
             "-g", str(self._framerate),
