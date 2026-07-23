@@ -607,7 +607,12 @@ class SyncTransport:
                 continue
 
             if self.__pattern < 2:
-                socks = dict(self.__poll.poll(self.__request_timeout * 3))
+                try:
+                    socks = dict(self.__poll.poll(self.__request_timeout * 3))
+                except zmq.ZMQError:
+                    self.__terminate.set()
+                    self.__queue.append(None)
+                    break
                 if socks.get(self.__msg_socket) == zmq.POLLIN:
                     try:
                         msg_json = self.__msg_socket.recv_json(flags=self.__msg_flag | zmq.DONTWAIT)

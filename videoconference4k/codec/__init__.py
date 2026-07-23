@@ -29,6 +29,7 @@ from .jpeg import (
 )
 from .factory import (
     get_best_encoder,
+    get_best_decoder,
     get_decoder_for_type,
     get_available_codecs,
     CodecType,
@@ -58,6 +59,7 @@ __all__ = [
     "JpegEncoder",
     "JpegDecoder",
     "get_best_encoder",
+    "get_best_decoder",
     "get_decoder_for_type",
     "get_available_codecs",
     "CodecType",

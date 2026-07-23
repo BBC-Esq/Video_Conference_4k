@@ -71,7 +71,7 @@ class AsyncTransport:
             logging=logging,
         )
 
-        self.__msg_pattern, self.__pattern = validate_pattern(pattern, async_mode=True)
+        self.__pattern, self.__pattern_sockets = validate_pattern(pattern, async_mode=True)
         self.__protocol = validate_protocol(protocol)
 
         self.__terminate = False
@@ -194,13 +194,13 @@ class AsyncTransport:
         else:
             raise RuntimeError("[AsyncTransport:ERROR] :: Assigned AsyncTransport configuration is invalid!")
 
-        self.__msg_socket = self.__msg_context.socket(self.__pattern[0])
+        self.__msg_socket = self.__msg_context.socket(self.__pattern_sockets[0])
 
-        if self.__msg_pattern == 1:
+        if self.__pattern == 1:
             self.__msg_socket.REQ_RELAXED = True
             self.__msg_socket.REQ_CORRELATE = True
 
-        if self.__msg_pattern == 2:
+        if self.__pattern == 2:
             self.__msg_socket.set_hwm(1)
 
         connection_string = "{}://{}:{}".format(self.__protocol, self.__address, self.__port)
@@ -208,7 +208,7 @@ class AsyncTransport:
         try:
             self.__msg_socket.connect(connection_string)
             self.__logging and logger.debug(
-                "Successfully connected to address: {} with pattern: {}.".format(connection_string, self.__msg_pattern)
+                "Successfully connected to address: {} with pattern: {}.".format(connection_string, self.__pattern)
             )
             if self.__compression_handler.is_nvidia:
                 logger.critical("Send Mode is successfully activated with GPU acceleration and ready to send data!")
@@ -222,7 +222,7 @@ class AsyncTransport:
                 logger.error("Failed to activate Bidirectional Mode for this connection!")
             raise ValueError(
                 "[AsyncTransport:ERROR] :: Failed to connect address: {} and pattern: {}!".format(
-                    connection_string, self.__msg_pattern
+                    connection_string, self.__pattern
                 )
             )
 
@@ -273,7 +273,7 @@ class AsyncTransport:
                 frame_enc = msgpack.packb(frame, default=m.encode)
                 await self.__msg_socket.send_multipart([frame_enc])
 
-            if self.__msg_pattern < 2:
+            if self.__pattern < 2:
                 if self.__bi_mode:
                     recvdmsg_encoded = await asyncio.wait_for(
                         self.__msg_socket.recv(), timeout=self.__timeout
@@ -321,9 +321,9 @@ class AsyncTransport:
                 "[AsyncTransport:ERROR] :: `recv_generator()` function cannot be accessed while `receive_mode` is disabled."
             )
 
-        self.__msg_socket = self.__msg_context.socket(self.__pattern[1])
+        self.__msg_socket = self.__msg_context.socket(self.__pattern_sockets[1])
 
-        if self.__msg_pattern == 2:
+        if self.__pattern == 2:
             self.__msg_socket.set_hwm(1)
             self.__msg_socket.setsockopt(zmq.SUBSCRIBE, b"")
 
@@ -332,7 +332,7 @@ class AsyncTransport:
         try:
             self.__msg_socket.bind(connection_string)
             self.__logging and logger.debug(
-                "Successfully binded to address: {} with pattern: {}.".format(connection_string, self.__msg_pattern)
+                "Successfully binded to address: {} with pattern: {}.".format(connection_string, self.__pattern)
             )
             if self.__compression_handler.is_nvidia:
                 logger.critical("Receive Mode is activated successfully with GPU acceleration!")
@@ -345,7 +345,7 @@ class AsyncTransport:
             raise RuntimeError(
                 "[AsyncTransport:ERROR] :: Failed to bind address: {} and pattern: {}{}!".format(
                     connection_string,
-                    self.__msg_pattern,
+                    self.__pattern,
                     " and Bidirectional Mode enabled" if self.__bi_mode else "",
                 )
             )
@@ -355,7 +355,7 @@ class AsyncTransport:
             data = msgpack.unpackb(datamsg_encoded, use_list=False)
 
             if data.get("terminate", False):
-                if self.__msg_pattern < 2:
+                if self.__pattern < 2:
                     return_dict = dict(terminated="Client-`{}` successfully terminated!".format(self.__id))
                     retdata_enc = msgpack.packb(return_dict)
                     await self.__msg_socket.send(retdata_enc)
@@ -378,7 +378,7 @@ class AsyncTransport:
             else:
                 frame = msgpack.unpackb(framemsg_encoded[0], use_list=False, object_hook=m.decode)
 
-            if self.__msg_pattern < 2:
+            if self.__pattern < 2:
                 if self.__bi_mode and data.get("bi_mode", False):
                     if not self.__queue.empty():
                         return_data = await self.__queue.get()
@@ -485,7 +485,7 @@ class AsyncTransport:
                     data_dict = dict(terminate=True)
                     data_enc = msgpack.packb(data_dict)
                     await self.__msg_socket.send(data_enc)
-                    if self.__msg_pattern < 2 and not disable_confirmation:
+                    if self.__pattern < 2 and not disable_confirmation:
                         recv_confirmation = await asyncio.wait_for(
                             self.__msg_socket.recv(), timeout=2.0
                         )

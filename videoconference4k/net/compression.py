@@ -146,6 +146,11 @@ class CompressionHandler:
             self._jpeg_decoder = None
 
     def _get_nvidia_encoder(self, width: int, height: int) -> NvidiaEncoder:
+        if self._nvidia_encoder is not None and (
+            self._nvidia_encoder.width != width or self._nvidia_encoder.height != height
+        ):
+            self._nvidia_encoder.close()
+            self._nvidia_encoder = None
         if self._nvidia_encoder is None:
             self._nvidia_encoder = NvidiaEncoder(
                 width=width,
@@ -167,6 +172,11 @@ class CompressionHandler:
         return self._nvidia_decoder
 
     def _get_software_encoder(self, width: int, height: int) -> SoftwareEncoder:
+        if self._software_encoder is not None and (
+            self._software_encoder.width != width or self._software_encoder.height != height
+        ):
+            self._software_encoder.close()
+            self._software_encoder = None
         if self._software_encoder is None:
             codec = "x264" if self._gpu_codec in ["h264", "x264"] else "x265"
             self._software_encoder = SoftwareEncoder(
@@ -188,6 +198,11 @@ class CompressionHandler:
         return self._software_decoder
 
     def _get_jpeg_encoder(self, width: int, height: int) -> JpegEncoder:
+        if self._jpeg_encoder is not None and (
+            self._jpeg_encoder.width != width or self._jpeg_encoder.height != height
+        ):
+            self._jpeg_encoder.close()
+            self._jpeg_encoder = None
         if self._jpeg_encoder is None:
             self._jpeg_encoder = JpegEncoder(
                 width=width,

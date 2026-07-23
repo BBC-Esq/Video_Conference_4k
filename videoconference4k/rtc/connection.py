@@ -20,7 +20,6 @@ if aiortc is not None:
     from aiortc import (
         RTCPeerConnection,
         RTCSessionDescription,
-        RTCIceCandidate,
         RTCConfiguration,
         RTCIceServer,
     )
@@ -139,14 +138,11 @@ class RTCConnection:
         self.__on_video_frame_callback = None
         self.__on_audio_frame_callback = None
         self.__on_connection_state_callback = None
-        self.__on_ice_candidate_callback = None
 
         self.__loop = None
         self.__thread = None
         self.__is_running = False
         self.__terminate = threading.Event()
-
-        self.__pending_ice_candidates = []
 
         self.__audio_playback = None
         if self.__enable_audio:
@@ -203,13 +199,6 @@ class RTCConnection:
         else:
             logger.warning("Invalid callback. Must be callable.")
 
-    def on_ice_candidate(self, callback: Callable[[dict], None]) -> None:
-        if callable(callback):
-            self.__on_ice_candidate_callback = callback
-            self.__logging and logger.debug("ICE candidate callback registered.")
-        else:
-            logger.warning("Invalid callback. Must be callable.")
-
     def __ensure_loop(self):
         if self.__loop is None or self.__loop.is_closed():
             self.__loop = asyncio.new_event_loop()
@@ -248,19 +237,6 @@ class RTCConnection:
         @self.__pc.on("icegatheringstatechange")
         async def on_icegatheringstatechange():
             self.__logging and logger.debug("ICE gathering state: {}".format(self.__pc.iceGatheringState))
-
-        @self.__pc.on("icecandidate")
-        async def on_icecandidate(candidate):
-            if candidate and self.__on_ice_candidate_callback is not None:
-                candidate_dict = {
-                    "candidate": candidate.candidate,
-                    "sdpMid": candidate.sdpMid,
-                    "sdpMLineIndex": candidate.sdpMLineIndex,
-                }
-                try:
-                    self.__on_ice_candidate_callback(candidate_dict)
-                except Exception as e:
-                    logger.error("Error in ICE candidate callback: {}".format(e))
 
         @self.__pc.on("track")
         async def on_track(track):
@@ -357,10 +333,6 @@ class RTCConnection:
         remote_description = RTCSessionDescription(sdp=offer["sdp"], type=offer["type"])
         await self.__pc.setRemoteDescription(remote_description)
 
-        for candidate in self.__pending_ice_candidates:
-            await self.__pc.addIceCandidate(candidate)
-        self.__pending_ice_candidates.clear()
-
         answer = await self.__pc.createAnswer()
         await self.__pc.setLocalDescription(answer)
 
@@ -376,21 +348,6 @@ class RTCConnection:
         remote_description = RTCSessionDescription(sdp=answer["sdp"], type=answer["type"])
         await self.__pc.setRemoteDescription(remote_description)
 
-        for candidate in self.__pending_ice_candidates:
-            await self.__pc.addIceCandidate(candidate)
-        self.__pending_ice_candidates.clear()
-
-    async def __add_ice_candidate_async(self, candidate: dict):
-        ice_candidate = RTCIceCandidate(
-            candidate=candidate.get("candidate"),
-            sdpMid=candidate.get("sdpMid"),
-            sdpMLineIndex=candidate.get("sdpMLineIndex"),
-        )
-        if self.__pc is not None and self.__pc.remoteDescription is not None:
-            await self.__pc.addIceCandidate(ice_candidate)
-        else:
-            self.__pending_ice_candidates.append(ice_candidate)
-
     def create_offer(self) -> dict:
         self.__logging and logger.debug("Creating offer.")
         self.__is_running = True
@@ -404,10 +361,6 @@ class RTCConnection:
     def set_answer(self, answer: dict) -> None:
         self.__logging and logger.debug("Setting answer.")
         self.__run_coroutine(self.__set_answer_async(answer))
-
-    def add_ice_candidate(self, candidate: dict) -> None:
-        self.__logging and logger.debug("Adding ICE candidate.")
-        self.__run_coroutine(self.__add_ice_candidate_async(candidate))
 
     def offer_to_json(self, offer: dict) -> str:
         return json.dumps(offer)
