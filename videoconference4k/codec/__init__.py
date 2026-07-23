@@ -27,6 +27,11 @@ from .jpeg import (
     JpegEncoder,
     JpegDecoder,
 )
+from .opus import (
+    has_opus_codec,
+    OpusEncoder,
+    OpusDecoder,
+)
 from .factory import (
     get_best_encoder,
     get_best_decoder,
@@ -58,6 +63,9 @@ __all__ = [
     "has_jpeg_codec",
     "JpegEncoder",
     "JpegDecoder",
+    "has_opus_codec",
+    "OpusEncoder",
+    "OpusDecoder",
     "get_best_encoder",
     "get_best_decoder",
     "get_decoder_for_type",
