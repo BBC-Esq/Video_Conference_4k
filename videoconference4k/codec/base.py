@@ -1,5 +1,5 @@
 import subprocess
-import sys
+import threading
 from abc import ABC, abstractmethod
 from typing import Optional
 from numpy.typing import NDArray
@@ -78,6 +78,10 @@ class FFmpegPipeEncoder(BaseEncoder):
         self._process = None
         self._frame_size = width * height * 3
         self._codec = None
+        self._out_buffer = bytearray()
+        self._out_lock = threading.Lock()
+        self._stdout_thread = None
+        self._stderr_thread = None
 
     @property
     def width(self) -> int:
@@ -111,9 +115,35 @@ class FFmpegPipeEncoder(BaseEncoder):
             self._logger.error("Failed to create encoder: {}".format(e))
             raise
 
+        self._stdout_thread = threading.Thread(
+            target=self._drain_stdout, args=(self._process.stdout,), daemon=True
+        )
+        self._stderr_thread = threading.Thread(
+            target=self._drain_stderr, args=(self._process.stderr,), daemon=True
+        )
+        self._stdout_thread.start()
+        self._stderr_thread.start()
+
+    def _drain_stdout(self, stream) -> None:
+        try:
+            while True:
+                chunk = stream.read1(65536)
+                if not chunk:
+                    break
+                with self._out_lock:
+                    self._out_buffer.extend(chunk)
+        except Exception:
+            pass
+
+    def _drain_stderr(self, stream) -> None:
+        try:
+            while stream.read1(65536):
+                pass
+        except Exception:
+            pass
+
     def encode(self, bgr_frame: NDArray) -> bytes:
         import cv2
-        import select
 
         if self._process is None or self._process.poll() is not None:
             return b''
@@ -124,48 +154,14 @@ class FFmpegPipeEncoder(BaseEncoder):
         try:
             self._process.stdin.write(bgr_frame.tobytes())
             self._process.stdin.flush()
-
-            encoded_data = b''
-
-            if sys.platform == 'win32':
-                while True:
-                    try:
-                        chunk = self._process.stdout.read(4096)
-                        if chunk:
-                            encoded_data += chunk
-                        else:
-                            break
-                    except:
-                        break
-
-                    if len(encoded_data) > 0:
-                        try:
-                            more = self._process.stdout.read(4096)
-                            if more:
-                                encoded_data += more
-                            else:
-                                break
-                        except:
-                            break
-                    else:
-                        break
-            else:
-                while True:
-                    ready, _, _ = select.select([self._process.stdout], [], [], 0.001)
-                    if ready:
-                        chunk = self._process.stdout.read(4096)
-                        if chunk:
-                            encoded_data += chunk
-                        else:
-                            break
-                    else:
-                        break
-
-            return encoded_data
-
         except Exception as e:
             self._logging and self._logger.error("Encode error: {}".format(e))
             return b''
+
+        with self._out_lock:
+            encoded_data = bytes(self._out_buffer)
+            self._out_buffer.clear()
+        return encoded_data
 
     def flush(self) -> bytes:
         if self._process is None:
@@ -173,10 +169,21 @@ class FFmpegPipeEncoder(BaseEncoder):
 
         try:
             self._process.stdin.close()
-            remaining, _ = self._process.communicate(timeout=5)
-            return remaining if remaining else b''
         except Exception:
-            return b''
+            pass
+
+        try:
+            self._process.wait(timeout=5)
+        except Exception:
+            pass
+
+        if self._stdout_thread is not None:
+            self._stdout_thread.join(timeout=5)
+
+        with self._out_lock:
+            remaining = bytes(self._out_buffer)
+            self._out_buffer.clear()
+        return remaining
 
     def close(self) -> None:
         self._logging and self._logger.debug("Closing {}".format(self.__class__.__name__))
@@ -197,6 +204,17 @@ class FFmpegPipeEncoder(BaseEncoder):
                     pass
 
             self._process = None
+
+        if self._stdout_thread is not None:
+            self._stdout_thread.join(timeout=1)
+            self._stdout_thread = None
+
+        if self._stderr_thread is not None:
+            self._stderr_thread.join(timeout=1)
+            self._stderr_thread = None
+
+        with self._out_lock:
+            self._out_buffer.clear()
 
     def get_compression_metadata(self) -> dict:
         return {
