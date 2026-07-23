@@ -1,3 +1,5 @@
+import asyncio
+import json
 import threading
 import time
 from typing import Optional, Callable, Tuple
@@ -13,7 +15,9 @@ from .base import (
     logger as base_logger,
 )
 from ..rtc.connection import RTCConnection
-from ..utils.common import get_logger
+from ..utils.common import get_logger, import_dependency_safe
+
+websockets = import_dependency_safe("websockets", error="silent")
 
 logger = get_logger("PeerConference")
 
@@ -207,6 +211,70 @@ class PeerConference(BaseConference, CallbackRegistrar):
         self._logging and logger.info(
             "Connection process started. Waiting for peer-to-peer link..."
         )
+
+    def connect(
+        self,
+        room: str,
+        signaling_url: str = "ws://localhost:8765",
+        timeout: float = 30.0,
+    ) -> bool:
+        if self.__rtc is not None:
+            raise RuntimeError(
+                "Already in a session. Call stop() first to start a new one."
+            )
+        import_dependency_safe("websockets" if websockets is None else "", error="raise")
+
+        self._logging and logger.info(
+            "Connecting to room '{}' via {} ...".format(room, signaling_url)
+        )
+        asyncio.run(self.__connect_async(room, signaling_url, timeout))
+        return self.wait_for_connection(timeout)
+
+    async def __await_message(self, ws, msg_type: str, timeout: float) -> dict:
+        while True:
+            raw = await asyncio.wait_for(ws.recv(), timeout)
+            try:
+                message = json.loads(raw)
+            except (ValueError, TypeError):
+                continue
+            received = message.get("type")
+            if received == msg_type:
+                return message
+            if received in ("peer_left", "room_full"):
+                raise RuntimeError(
+                    "Signaling failed while awaiting '{}' (received '{}').".format(
+                        msg_type, received
+                    )
+                )
+
+    async def __connect_async(self, room: str, signaling_url: str, timeout: float) -> None:
+        loop = asyncio.get_running_loop()
+        async with websockets.connect(signaling_url) as ws:
+            await ws.send(json.dumps({"type": "join", "room": room}))
+            joined = json.loads(await asyncio.wait_for(ws.recv(), timeout))
+            if joined.get("type") == "room_full":
+                raise RuntimeError("Signaling room '{}' is full.".format(room))
+
+            if joined.get("peers", 0) == 0:
+                self.__is_initiator = True
+                await self.__await_message(ws, "peer_joined", timeout)
+                await loop.run_in_executor(None, self._start_local_media)
+                await loop.run_in_executor(None, self.__setup_rtc)
+                offer = await loop.run_in_executor(None, self.__rtc.create_offer)
+                await ws.send(json.dumps({"type": "offer", "room": room, "data": offer}))
+                answer_msg = await self.__await_message(ws, "answer", timeout)
+                await loop.run_in_executor(None, self.__rtc.set_answer, answer_msg["data"])
+            else:
+                self.__is_initiator = False
+                offer_msg = await self.__await_message(ws, "offer", timeout)
+                await loop.run_in_executor(None, self._start_local_media)
+                await loop.run_in_executor(None, self.__setup_rtc)
+                answer = await loop.run_in_executor(
+                    None, self.__rtc.create_answer, offer_msg["data"]
+                )
+                await ws.send(json.dumps({"type": "answer", "room": room, "data": answer}))
+
+            self.__is_streaming = True
 
     def get_remote_frame(self) -> Optional[NDArray]:
         with self.__frame_lock:
