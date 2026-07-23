@@ -79,9 +79,13 @@ if aiortc is not None:
             return video_frame
 
         def stop(self):
+            # Never stop the video source here: tracks do not own their
+            # sources. The owner (RTCConnection for sources it created, or
+            # the conference for shared media) manages the source lifecycle.
+            # Stopping it here killed the shared camera for every remaining
+            # peer whenever one connection closed.
             super().stop()
-            if self.__video_source is not None and hasattr(self.__video_source, "stop"):
-                self.__video_source.stop()
+            self.__video_source = None
 
 
     class _LocalAudioTrack(AudioStreamTrack):
@@ -148,9 +152,10 @@ if aiortc is not None:
             return audio_frame
 
         def stop(self):
+            # Never stop the audio source here: tracks do not own their
+            # sources (see _LocalVideoTrack.stop).
             super().stop()
-            if self.__audio_source is not None and hasattr(self.__audio_source, "stop"):
-                self.__audio_source.stop()
+            self.__audio_source = None
 
     LocalVideoTrack = _LocalVideoTrack
     LocalAudioTrack = _LocalAudioTrack
