@@ -1,5 +1,5 @@
 from .version import __version__
-from .capture import VideoCapture, AudioCapture
+from .capture import VideoCapture, AudioCapture, probe_camera
 from .stream import VideoStream
 from .net import SyncTransport, AsyncTransport
 from .rtc import RTCConnection
@@ -10,6 +10,7 @@ __author__ = "Blair Chintella <vici0549@gmail.com>"
 __all__ = [
     "VideoCapture",
     "AudioCapture",
+    "probe_camera",
     "VideoStream",
     "SyncTransport",
     "AsyncTransport",

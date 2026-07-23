@@ -19,6 +19,93 @@ logger = get_logger("VideoCapture")
 
 T = TypeVar("T", bound="VideoCapture")
 
+DEFAULT_CAMERA_PRESETS = [
+    (3840, 2160, 60),
+    (3840, 2160, 30),
+    (2560, 1440, 60),
+    (1920, 1080, 60),
+    (1920, 1080, 30),
+    (1280, 720, 60),
+    (1280, 720, 30),
+]
+
+
+def probe_camera(
+    source: int = 0,
+    presets: Optional[list] = None,
+    backend: int = 0,
+    warmup: int = 5,
+    sample: int = 30,
+    logging: bool = False,
+) -> list:
+    if presets is None:
+        presets = DEFAULT_CAMERA_PRESETS
+
+    report = []
+    for (req_w, req_h, req_fps) in presets:
+        entry = {
+            "requested": (req_w, req_h, req_fps),
+            "opened": False,
+            "delivered": None,
+            "measured_fps": 0.0,
+            "fourcc": "",
+        }
+
+        if backend and isinstance(backend, int):
+            if check_CV_version() == 3:
+                cap = cv2.VideoCapture(source + backend)
+            else:
+                cap = cv2.VideoCapture(source, backend)
+        else:
+            cap = cv2.VideoCapture(source)
+
+        try:
+            if not cap.isOpened():
+                report.append(entry)
+                continue
+            entry["opened"] = True
+
+            if req_w * req_h >= 1920 * 1080:
+                cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"MJPG"))
+            cap.set(cv2.CAP_PROP_FRAME_WIDTH, req_w)
+            cap.set(cv2.CAP_PROP_FRAME_HEIGHT, req_h)
+            cap.set(cv2.CAP_PROP_FPS, req_fps)
+
+            for _ in range(warmup):
+                cap.read()
+
+            frames = 0
+            start = time.perf_counter()
+            while frames < sample:
+                grabbed, _ = cap.read()
+                if not grabbed:
+                    break
+                frames += 1
+            elapsed = time.perf_counter() - start
+
+            entry["delivered"] = (
+                int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)),
+                int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT)),
+            )
+            entry["measured_fps"] = (frames / elapsed) if elapsed > 0 else 0.0
+            cc = int(cap.get(cv2.CAP_PROP_FOURCC))
+            entry["fourcc"] = (
+                "".join(chr((cc >> (8 * i)) & 0xFF) for i in range(4)).strip()
+                if cc else ""
+            )
+            logging and logger.info(
+                "Probe {}x{}@{} -> delivered {} @ {:.1f} fps (FOURCC {}).".format(
+                    req_w, req_h, req_fps, entry["delivered"],
+                    entry["measured_fps"], entry["fourcc"] or "N/A"
+                )
+            )
+        finally:
+            cap.release()
+
+        report.append(entry)
+
+    return report
+
 
 class VideoCapture:
 
