@@ -50,6 +50,8 @@ class AudioCapture:
 
         self.__input_queue = queue.Queue(maxsize=100)
         self.__output_queue = queue.Queue(maxsize=100)
+        self.__subscribers = []
+        self.__subscribers_lock = threading.Lock()
 
         self.__input_stream = None
         self.__output_stream = None
@@ -124,6 +126,17 @@ class AudioCapture:
                 self.__input_queue.put_nowait(audio_data)
             except queue.Full:
                 pass
+            with self.__subscribers_lock:
+                subscribers = list(self.__subscribers)
+            for subscriber in subscribers:
+                try:
+                    subscriber.put_nowait(audio_data)
+                except queue.Full:
+                    try:
+                        subscriber.get_nowait()
+                        subscriber.put_nowait(audio_data)
+                    except (queue.Empty, queue.Full):
+                        pass
             if self.__on_audio_callback is not None:
                 try:
                     self.__on_audio_callback(audio_data)
@@ -204,6 +217,17 @@ class AudioCapture:
         self.__is_running = True
         self.__logging and logger.debug("AudioCapture started successfully.")
         return self
+
+    def subscribe(self, maxsize: int = 100) -> "queue.Queue":
+        subscriber = queue.Queue(maxsize=maxsize)
+        with self.__subscribers_lock:
+            self.__subscribers.append(subscriber)
+        return subscriber
+
+    def unsubscribe(self, subscriber: "queue.Queue") -> None:
+        with self.__subscribers_lock:
+            if subscriber in self.__subscribers:
+                self.__subscribers.remove(subscriber)
 
     def read(self, timeout: Optional[float] = None) -> Optional[NDArray]:
         if not self.__enable_input:

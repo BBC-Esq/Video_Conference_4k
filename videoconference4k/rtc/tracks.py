@@ -1,5 +1,6 @@
 import asyncio
 import fractions
+import queue
 import time
 import numpy as np
 from typing import Any, Union
@@ -108,6 +109,7 @@ if aiortc is not None:
             self.__started = False
             self.__timestamp = 0
             self.__start_time = None
+            self.__subscription = None
 
         async def recv(self):
             if not self.__started:
@@ -116,6 +118,8 @@ if aiortc is not None:
                 if self.__audio_source is not None and hasattr(self.__audio_source, "start"):
                     if not self.__audio_source.is_running:
                         self.__audio_source.start()
+                if self.__audio_source is not None and hasattr(self.__audio_source, "subscribe"):
+                    self.__subscription = self.__audio_source.subscribe()
 
             pts = self.__timestamp
             self.__timestamp += self.__samples_per_frame
@@ -125,7 +129,12 @@ if aiortc is not None:
                 await asyncio.sleep(wait)
 
             audio_data = None
-            if self.__audio_source is not None:
+            if self.__subscription is not None:
+                try:
+                    audio_data = self.__subscription.get(timeout=0.001)
+                except queue.Empty:
+                    audio_data = None
+            elif self.__audio_source is not None:
                 audio_data = self.__audio_source.read(timeout=0.001)
 
             if audio_data is None:
@@ -141,7 +150,7 @@ if aiortc is not None:
                 audio_data = audio_data[:self.__samples_per_frame]
 
             audio_frame = AudioFrame.from_ndarray(
-                audio_data.T if self.__channels > 1 else audio_data.reshape(1, -1),
+                audio_data.reshape(1, -1),
                 format="s16",
                 layout="mono" if self.__channels == 1 else "stereo",
             )
@@ -155,6 +164,9 @@ if aiortc is not None:
             # Never stop the audio source here: tracks do not own their
             # sources (see _LocalVideoTrack.stop).
             super().stop()
+            if self.__subscription is not None and self.__audio_source is not None and hasattr(self.__audio_source, "unsubscribe"):
+                self.__audio_source.unsubscribe(self.__subscription)
+            self.__subscription = None
             self.__audio_source = None
 
     LocalVideoTrack = _LocalVideoTrack
