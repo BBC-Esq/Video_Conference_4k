@@ -1,5 +1,6 @@
 import asyncio
 import os
+import socket
 from typing import Optional, Tuple, Dict, Any
 from os.path import expanduser
 
@@ -130,7 +131,11 @@ def setup_authenticator(
 
         z_auth = ThreadAuthenticator(context)
         z_auth.start()
-        z_auth.allow(str(address))
+        if address and str(address) != "*":
+            try:
+                z_auth.allow(socket.gethostbyname(str(address)))
+            except Exception:
+                z_auth.allow(str(address))
 
         if secure_mode == 2:
             z_auth.configure_curve(

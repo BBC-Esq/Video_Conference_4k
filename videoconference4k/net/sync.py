@@ -312,6 +312,8 @@ class SyncTransport:
         self.__msg_context = zmq.Context.instance()
         self.__receive_mode = receive_mode
 
+        address = validate_address(address, receive_mode)
+
         if self.__secure_mode > 0:
             if receive_mode:
                 overwrite_cert = False
@@ -338,7 +340,6 @@ class SyncTransport:
                     )
                 )
 
-        address = validate_address(address, receive_mode)
         port = validate_port(port)
 
         if self.__receive_mode:
