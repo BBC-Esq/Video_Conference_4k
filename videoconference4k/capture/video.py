@@ -1,23 +1,21 @@
 import cv2
 import time
 import queue
-import logging as log
 from threading import Thread, Event, Lock
 from typing import TypeVar, Optional, Any
 from numpy.typing import NDArray
 
 from ..utils.common import (
-    capPropId,
-    logger_handler,
-    check_CV_version,
+    get_logger,
     import_dependency_safe,
     log_version,
 )
+from ..utils.cv import (
+    capPropId,
+    check_CV_version,
+)
 
-logger = log.getLogger("VideoCapture")
-logger.propagate = False
-logger.addHandler(logger_handler())
-logger.setLevel(log.DEBUG)
+logger = get_logger("VideoCapture")
 
 T = TypeVar("T", bound="VideoCapture")
 

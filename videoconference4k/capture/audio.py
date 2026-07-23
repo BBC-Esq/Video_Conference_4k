@@ -1,22 +1,18 @@
 import numpy as np
-import logging as log
 import threading
 import queue
 from typing import TypeVar, Optional, Callable, Union
 from numpy.typing import NDArray
 
 from ..utils.common import (
-    logger_handler,
+    get_logger,
     import_dependency_safe,
     log_version,
 )
 
 sd = import_dependency_safe("sounddevice", error="silent")
 
-logger = log.getLogger("AudioCapture")
-logger.propagate = False
-logger.addHandler(logger_handler())
-logger.setLevel(log.DEBUG)
+logger = get_logger("AudioCapture")
 
 T = TypeVar("T", bound="AudioCapture")
 
@@ -139,12 +135,28 @@ class AudioCapture:
             self.__logging and logger.warning("Output status: {}".format(status))
         try:
             data = self.__output_queue.get_nowait()
+
             if data.ndim == 1:
                 data = data.reshape(-1, 1)
+
+            out_channels = outdata.shape[1] if outdata.ndim > 1 else 1
+            in_channels = data.shape[1] if data.ndim > 1 else 1
+
+            if in_channels != out_channels:
+                if in_channels == 1 and out_channels > 1:
+                    data = np.tile(data, (1, out_channels))
+                elif in_channels > 1 and out_channels == 1:
+                    data = data[:, 0:1]
+                else:
+                    data = data[:, :out_channels] if in_channels > out_channels else np.pad(
+                        data, ((0, 0), (0, out_channels - in_channels)), mode='constant'
+                    )
+
             samples_to_copy = min(data.shape[0], outdata.shape[0])
             outdata[:samples_to_copy] = data[:samples_to_copy]
             if samples_to_copy < outdata.shape[0]:
                 outdata[samples_to_copy:] = 0
+
         except queue.Empty:
             outdata.fill(0)
 

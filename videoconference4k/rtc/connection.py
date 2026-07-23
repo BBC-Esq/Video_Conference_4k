@@ -2,13 +2,12 @@ import asyncio
 import threading
 import time
 import json
-import logging as log
 from typing import TypeVar, Optional, Callable, Any, Union
 import numpy as np
 from numpy.typing import NDArray
 
 from ..utils.common import (
-    logger_handler,
+    get_logger,
     import_dependency_safe,
     log_version,
 )
@@ -26,10 +25,7 @@ if aiortc is not None:
         RTCIceServer,
     )
 
-logger = log.getLogger("RTCConnection")
-logger.propagate = False
-logger.addHandler(logger_handler())
-logger.setLevel(log.DEBUG)
+logger = get_logger("RTCConnection")
 
 T = TypeVar("T", bound="RTCConnection")
 

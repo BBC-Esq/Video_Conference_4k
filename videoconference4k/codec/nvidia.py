@@ -1,18 +1,15 @@
 import numpy as np
-import logging as log
 from typing import Optional
 from numpy.typing import NDArray
 
-from .common import logger_handler, import_dependency_safe, set_cuda_paths
+from .base import BaseEncoder, BaseDecoder
+from ..utils.common import get_logger, import_dependency_safe, set_cuda_paths
 
 set_cuda_paths()
 
 nvc = import_dependency_safe("PyNvVideoCodec", error="silent")
 
-logger = log.getLogger("NvidiaCodec")
-logger.propagate = False
-logger.addHandler(logger_handler())
-logger.setLevel(log.DEBUG)
+logger = get_logger("NvidiaCodec")
 
 
 def has_nvidia_codec() -> bool:
@@ -74,7 +71,7 @@ def nv12_to_bgr(nv12_data: NDArray, width: int, height: int) -> NDArray:
     return bgr
 
 
-class NvidiaEncoder:
+class NvidiaEncoder(BaseEncoder):
 
     def __init__(
         self,
@@ -153,6 +150,10 @@ class NvidiaEncoder:
         return self._height
 
     @property
+    def codec_type(self) -> str:
+        return "nvenc"
+
+    @property
     def codec(self) -> str:
         return self._codec
 
@@ -194,8 +195,16 @@ class NvidiaEncoder:
                 pass
             self._encoder = None
 
+    def get_compression_metadata(self) -> dict:
+        return {
+            "type": self.codec_type,
+            "codec": self._codec,
+            "width": self._width,
+            "height": self._height,
+        }
 
-class NvidiaDecoder:
+
+class NvidiaDecoder(BaseDecoder):
 
     def __init__(
         self,
@@ -218,7 +227,7 @@ class NvidiaDecoder:
             "h265": nvc.cudaVideoCodec.HEVC,
             "av1": nvc.cudaVideoCodec.AV1,
         }
-        
+
         cuda_codec = codec_map.get(codec.lower(), nvc.cudaVideoCodec.H264)
 
         try:
@@ -232,6 +241,10 @@ class NvidiaDecoder:
         except Exception as e:
             logger.error("Failed to create decoder: {}".format(e))
             raise
+
+    @property
+    def codec_type(self) -> str:
+        return "nvenc"
 
     @property
     def width(self) -> Optional[int]:

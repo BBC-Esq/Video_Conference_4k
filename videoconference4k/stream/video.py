@@ -1,14 +1,9 @@
-import cv2
-import logging as log
 from typing import TypeVar, Tuple, Union, Any
 from numpy.typing import NDArray
-from ..utils.common import logger_handler, log_version
+from ..utils.common import get_logger, log_version
 from ..capture.video import VideoCapture
 
-logger = log.getLogger("VideoStream")
-logger.propagate = False
-logger.addHandler(logger_handler())
-logger.setLevel(log.DEBUG)
+logger = get_logger("VideoStream")
 
 T = TypeVar("T", bound="VideoStream")
 

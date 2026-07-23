@@ -164,7 +164,7 @@ cv2.destroyAllWindows()
 
 ### Check GPU Availability
 ```python
-from videoconference4k.utils import has_nvidia_codec, get_nvidia_info
+from videoconference4k.codec import has_nvidia_codec, get_nvidia_info
 
 if has_nvidia_codec():
     print("NVIDIA hardware encoding available!")

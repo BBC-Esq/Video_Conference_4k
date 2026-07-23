@@ -1,48 +1,22 @@
-import json
-import base64
-import zlib
 import threading
 import time
-import logging as log
 from typing import Optional, Callable, Tuple, Dict
 import numpy as np
 from numpy.typing import NDArray
 
-from ..stream.video import VideoStream
-from ..capture.audio import AudioCapture
+from .base import (
+    BaseConference,
+    compress_sdp,
+    decompress_sdp,
+    STUN_ONLY_SERVERS,
+)
 from ..rtc.connection import RTCConnection
-from ..utils.common import logger_handler, log_version
+from ..utils.common import get_logger
 
-logger = log.getLogger("MultiPeerConference")
-logger.propagate = False
-logger.addHandler(logger_handler())
-logger.setLevel(log.DEBUG)
-
-STUN_ONLY_SERVERS = [
-    {"urls": ["stun:stun.l.google.com:19302"]},
-    {"urls": ["stun:stun1.l.google.com:19302"]},
-    {"urls": ["stun:stun.stunprotocol.org:3478"]},
-]
+logger = get_logger("MultiPeerConference")
 
 
-def _compress_sdp(sdp_dict: dict) -> str:
-    json_bytes = json.dumps(sdp_dict, separators=(',', ':')).encode('utf-8')
-    compressed = zlib.compress(json_bytes, level=9)
-    return base64.urlsafe_b64encode(compressed).decode('ascii')
-
-
-def _decompress_sdp(code: str) -> dict:
-    try:
-        compressed = base64.urlsafe_b64decode(code.encode('ascii'))
-        json_bytes = zlib.decompress(compressed)
-        return json.loads(json_bytes.decode('utf-8'))
-    except Exception as e:
-        raise ValueError(
-            "Invalid code. Make sure you copied the entire code correctly."
-        ) from e
-
-
-class MultiPeerConference:
+class MultiPeerConference(BaseConference):
 
     def __init__(
         self,
@@ -55,34 +29,19 @@ class MultiPeerConference:
         logging: bool = False,
         **options: dict
     ):
-        self.__logging = logging if isinstance(logging, bool) else False
-
-        log_version(logging=self.__logging)
-
-        self.__resolution = resolution
-        self.__framerate = framerate
-        self.__enable_audio = enable_audio
-        self.__max_peers = max_peers
-
-        options = {str(k).strip(): v for k, v in options.items()}
-
-        self.__video = VideoStream(
-            source=camera_id,
+        BaseConference.__init__(
+            self,
             resolution=resolution,
             framerate=framerate,
+            enable_audio=enable_audio,
+            camera_id=camera_id,
+            microphone_id=microphone_id,
+            ice_servers=STUN_ONLY_SERVERS,
             logging=logging,
             **options
         )
 
-        self.__audio = None
-        if enable_audio:
-            self.__audio = AudioCapture(
-                input_device=microphone_id,
-                sample_rate=48000,
-                channels=1,
-                enable_output=True,
-                logging=logging,
-            )
+        self.__max_peers = max_peers
 
         self.__peers: Dict[str, RTCConnection] = {}
         self.__peer_frames: Dict[str, NDArray] = {}
@@ -94,9 +53,7 @@ class MultiPeerConference:
         self.__on_peer_connected: Optional[Callable[[str], None]] = None
         self.__on_peer_disconnected: Optional[Callable[[str], None]] = None
 
-        self.__media_started = False
-
-        self.__logging and logger.debug(
+        self._logging and logger.debug(
             "MultiPeerConference initialized: max {} peers".format(max_peers)
         )
 
@@ -128,25 +85,15 @@ class MultiPeerConference:
         self.__on_peer_disconnected = callback
         return callback
 
-    def __start_local_media(self):
-        if self.__media_started:
-            return
-
-        self.__logging and logger.debug("Starting local media devices")
-        self.__video.start()
-        if self.__audio:
-            self.__audio.start()
-        self.__media_started = True
-
     def __create_rtc_for_peer(self, peer_name: str) -> RTCConnection:
         rtc = RTCConnection(
-            video_source=self.__video,
-            audio_source=self.__audio,
-            framerate=self.__framerate,
+            video_source=self._video,
+            audio_source=self._audio,
+            framerate=self._framerate,
             enable_video=True,
-            enable_audio=self.__enable_audio,
-            ice_servers=STUN_ONLY_SERVERS,
-            logging=self.__logging,
+            enable_audio=self._enable_audio,
+            ice_servers=self._ice_servers,
+            logging=self._logging,
         )
 
         def make_video_handler(name):
@@ -173,7 +120,7 @@ class MultiPeerConference:
 
         def make_state_handler(name):
             def handler(state):
-                self.__logging and logger.info(
+                self._logging and logger.info(
                     "Peer '{}' connection state: {}".format(name, state)
                 )
                 if state == "connected":
@@ -198,7 +145,7 @@ class MultiPeerConference:
 
         return rtc
 
-    def create_invite_for_peer(self, peer_name: str) -> str:
+    def __check_peer_limits(self, peer_name: str) -> None:
         if peer_name in self.__peers:
             raise RuntimeError(
                 "Already have a connection for peer '{}'. "
@@ -210,42 +157,36 @@ class MultiPeerConference:
                 "Maximum {} peers reached. Cannot add more.".format(self.__max_peers)
             )
 
-        self.__start_local_media()
+    def create_invite_for_peer(self, peer_name: str) -> str:
+        self.__check_peer_limits(peer_name)
+
+        self._start_local_media()
 
         rtc = self.__create_rtc_for_peer(peer_name)
         self.__peers[peer_name] = rtc
 
         offer = rtc.create_offer()
-        invite_code = _compress_sdp(offer)
+        invite_code = compress_sdp(offer)
 
-        self.__logging and logger.info(
+        self._logging and logger.info(
             "Created invite for '{}' ({} chars)".format(peer_name, len(invite_code))
         )
 
         return invite_code
 
     def accept_invite_from_peer(self, peer_name: str, invite_code: str) -> str:
-        if peer_name in self.__peers:
-            raise RuntimeError(
-                "Already have a connection for peer '{}'. "
-                "Use a different name or remove the existing one.".format(peer_name)
-            )
+        self.__check_peer_limits(peer_name)
 
-        if len(self.__peers) >= self.__max_peers:
-            raise RuntimeError(
-                "Maximum {} peers reached. Cannot add more.".format(self.__max_peers)
-            )
-
-        self.__start_local_media()
+        self._start_local_media()
 
         rtc = self.__create_rtc_for_peer(peer_name)
         self.__peers[peer_name] = rtc
 
-        offer = _decompress_sdp(invite_code)
+        offer = decompress_sdp(invite_code)
         answer = rtc.create_answer(offer)
-        response_code = _compress_sdp(answer)
+        response_code = compress_sdp(answer)
 
-        self.__logging and logger.info(
+        self._logging and logger.info(
             "Created response for '{}' ({} chars)".format(peer_name, len(response_code))
         )
 
@@ -258,10 +199,10 @@ class MultiPeerConference:
                 "Call create_invite_for_peer() first.".format(peer_name)
             )
 
-        answer = _decompress_sdp(response_code)
+        answer = decompress_sdp(response_code)
         self.__peers[peer_name].set_answer(answer)
 
-        self.__logging and logger.info(
+        self._logging and logger.info(
             "Completed connection handshake with '{}'".format(peer_name)
         )
 
@@ -269,7 +210,7 @@ class MultiPeerConference:
         if peer_name not in self.__peers:
             return
 
-        self.__logging and logger.debug("Removing peer: {}".format(peer_name))
+        self._logging and logger.debug("Removing peer: {}".format(peer_name))
 
         rtc = self.__peers.pop(peer_name)
         rtc.stop()
@@ -277,11 +218,6 @@ class MultiPeerConference:
         with self.__frame_lock:
             self.__peer_frames.pop(peer_name, None)
             self.__peer_audio.pop(peer_name, None)
-
-    def get_local_frame(self) -> Optional[NDArray]:
-        if not self.__media_started:
-            return None
-        return self.__video.read()
 
     def get_peer_frame(self, peer_name: str) -> Optional[NDArray]:
         with self.__frame_lock:
@@ -308,15 +244,11 @@ class MultiPeerConference:
         return False
 
     def stop(self):
-        self.__logging and logger.debug("Stopping MultiPeerConference")
+        self._logging and logger.debug("Stopping MultiPeerConference")
 
         for peer_name in list(self.__peers.keys()):
             self.remove_peer(peer_name)
 
-        if self.__media_started:
-            self.__video.stop()
-            if self.__audio:
-                self.__audio.stop()
-            self.__media_started = False
+        self._stop_local_media()
 
-        self.__logging and logger.debug("MultiPeerConference stopped")
+        self._logging and logger.debug("MultiPeerConference stopped")

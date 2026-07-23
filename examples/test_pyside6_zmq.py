@@ -8,7 +8,7 @@ from PySide6.QtWidgets import (
 from PySide6.QtGui import QImage, QPixmap
 from PySide6.QtCore import Qt, Signal, QThread, QTimer
 from videoconference4k import SyncTransport
-from videoconference4k.utils import has_nvidia_codec, get_nvidia_info
+from videoconference4k.codec import has_nvidia_codec, get_nvidia_info
 
 
 class ReceiverThread(QThread):

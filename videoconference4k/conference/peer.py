@@ -1,48 +1,24 @@
-import json
-import base64
-import zlib
 import threading
 import time
-import logging as log
 from typing import Optional, Callable, Tuple
 import numpy as np
 from numpy.typing import NDArray
 
-from ..stream.video import VideoStream
-from ..capture.audio import AudioCapture
+from .base import (
+    BaseConference,
+    CallbackRegistrar,
+    compress_sdp,
+    decompress_sdp,
+    STUN_ONLY_SERVERS,
+    logger as base_logger,
+)
 from ..rtc.connection import RTCConnection
-from ..utils.common import logger_handler, log_version
+from ..utils.common import get_logger
 
-logger = log.getLogger("PeerConference")
-logger.propagate = False
-logger.addHandler(logger_handler())
-logger.setLevel(log.DEBUG)
-
-STUN_ONLY_SERVERS = [
-    {"urls": ["stun:stun.l.google.com:19302"]},
-    {"urls": ["stun:stun1.l.google.com:19302"]},
-    {"urls": ["stun:stun.stunprotocol.org:3478"]},
-]
+logger = get_logger("PeerConference")
 
 
-def _compress_sdp(sdp_dict: dict) -> str:
-    json_bytes = json.dumps(sdp_dict, separators=(',', ':')).encode('utf-8')
-    compressed = zlib.compress(json_bytes, level=9)
-    return base64.urlsafe_b64encode(compressed).decode('ascii')
-
-
-def _decompress_sdp(code: str) -> dict:
-    try:
-        compressed = base64.urlsafe_b64decode(code.encode('ascii'))
-        json_bytes = zlib.decompress(compressed)
-        return json.loads(json_bytes.decode('utf-8'))
-    except Exception as e:
-        raise ValueError(
-            "Invalid code. Make sure you copied the entire code correctly."
-        ) from e
-
-
-class PeerConference:
+class PeerConference(BaseConference, CallbackRegistrar):
 
     def __init__(
         self,
@@ -55,45 +31,28 @@ class PeerConference:
         logging: bool = False,
         **options: dict
     ):
-        self.__logging = logging if isinstance(logging, bool) else False
+        ice_servers = STUN_ONLY_SERVERS if use_stun else []
 
-        log_version(logging=self.__logging)
-
-        self.__resolution = resolution
-        self.__framerate = framerate
-        self.__enable_audio = enable_audio
-
-        self.__ice_servers = STUN_ONLY_SERVERS if use_stun else []
-
-        options = {str(k).strip(): v for k, v in options.items()}
-
-        self.__video = VideoStream(
-            source=camera_id,
+        BaseConference.__init__(
+            self,
             resolution=resolution,
             framerate=framerate,
+            enable_audio=enable_audio,
+            camera_id=camera_id,
+            microphone_id=microphone_id,
+            ice_servers=ice_servers,
             logging=logging,
             **options
         )
 
-        self.__audio = None
-        if enable_audio:
-            self.__audio = AudioCapture(
-                input_device=microphone_id,
-                sample_rate=48000,
-                channels=1,
-                enable_output=True,
-                logging=logging,
-            )
+        CallbackRegistrar.__init__(self)
 
         self.__rtc: Optional[RTCConnection] = None
 
         self.__is_initiator = False
         self.__is_connected = False
         self.__is_streaming = False
-        self.__media_started = False
 
-        self.__on_remote_video: Optional[Callable[[NDArray], None]] = None
-        self.__on_remote_audio: Optional[Callable[[NDArray], None]] = None
         self.__on_connected: Optional[Callable[[], None]] = None
         self.__on_disconnected: Optional[Callable[[], None]] = None
 
@@ -101,7 +60,7 @@ class PeerConference:
         self.__last_remote_audio: Optional[NDArray] = None
         self.__frame_lock = threading.Lock()
 
-        self.__logging and logger.debug(
+        self._logging and logger.debug(
             "PeerConference initialized: {}x{} @ {}fps, audio={}".format(
                 resolution[0], resolution[1], framerate, enable_audio
             )
@@ -115,22 +74,6 @@ class PeerConference:
     def is_streaming(self) -> bool:
         return self.__is_streaming
 
-    @property
-    def resolution(self) -> Tuple[int, int]:
-        return self.__resolution
-
-    @property
-    def framerate(self) -> int:
-        return self.__framerate
-
-    def on_remote_video(self, callback: Callable[[NDArray], None]):
-        self.__on_remote_video = callback
-        return callback
-
-    def on_remote_audio(self, callback: Callable[[NDArray], None]):
-        self.__on_remote_audio = callback
-        return callback
-
     def on_connected(self, callback: Callable[[], None]):
         self.__on_connected = callback
         return callback
@@ -139,49 +82,31 @@ class PeerConference:
         self.__on_disconnected = callback
         return callback
 
-    def __start_local_media(self):
-        if self.__media_started:
-            return
-
-        self.__logging and logger.debug("Starting local media devices")
-        self.__video.start()
-        if self.__audio:
-            self.__audio.start()
-        self.__media_started = True
-
     def __setup_rtc(self):
         self.__rtc = RTCConnection(
-            video_source=self.__video,
-            audio_source=self.__audio,
-            framerate=self.__framerate,
+            video_source=self._video,
+            audio_source=self._audio,
+            framerate=self._framerate,
             sample_rate=48000,
             audio_channels=1,
             enable_video=True,
-            enable_audio=self.__enable_audio,
-            ice_servers=self.__ice_servers,
-            logging=self.__logging,
+            enable_audio=self._enable_audio,
+            ice_servers=self._ice_servers,
+            logging=self._logging,
         )
 
         def handle_video(frame: NDArray):
             with self.__frame_lock:
                 self.__last_remote_frame = frame
-            if self.__on_remote_video:
-                try:
-                    self.__on_remote_video(frame)
-                except Exception as e:
-                    logger.error("Error in video callback: {}".format(e))
+            self._invoke_video_callback(frame, logger)
 
         def handle_audio(audio: NDArray):
             with self.__frame_lock:
                 self.__last_remote_audio = audio
-            if self.__on_remote_audio:
-                try:
-                    self.__on_remote_audio(audio)
-                except Exception as e:
-                    logger.error("Error in audio callback: {}".format(e))
+            self._invoke_audio_callback(audio, logger)
 
         def handle_state(state: str):
-            self.__logging and logger.info("Connection state: {}".format(state))
+            self._logging and logger.info("Connection state: {}".format(state))
             if state == "connected":
                 self.__is_connected = True
                 logger.critical("Peer-to-peer connection established!")
@@ -213,17 +138,15 @@ class PeerConference:
 
         self.__is_initiator = True
 
-        self.__start_local_media()
-
+        self._start_local_media()
         self.__setup_rtc()
 
-        self.__logging and logger.debug("Creating WebRTC offer...")
+        self._logging and logger.debug("Creating WebRTC offer...")
 
         offer = self.__rtc.create_offer()
+        invite_code = compress_sdp(offer)
 
-        invite_code = _compress_sdp(offer)
-
-        self.__logging and logger.info(
+        self._logging and logger.info(
             "Created invite code ({} characters)".format(len(invite_code))
         )
 
@@ -237,20 +160,18 @@ class PeerConference:
 
         self.__is_initiator = False
 
-        self.__start_local_media()
-
+        self._start_local_media()
         self.__setup_rtc()
 
-        self.__logging and logger.debug("Decoding invite code...")
-        offer = _decompress_sdp(invite_code)
+        self._logging and logger.debug("Decoding invite code...")
+        offer = decompress_sdp(invite_code)
 
-        self.__logging and logger.debug("Creating WebRTC answer...")
+        self._logging and logger.debug("Creating WebRTC answer...")
 
         answer = self.__rtc.create_answer(offer)
+        response_code = compress_sdp(answer)
 
-        response_code = _compress_sdp(answer)
-
-        self.__logging and logger.info(
+        self._logging and logger.info(
             "Created response code ({} characters)".format(len(response_code))
         )
 
@@ -270,21 +191,16 @@ class PeerConference:
                 "Must call create_invite() first before complete_connection()."
             )
 
-        self.__logging and logger.debug("Decoding response code...")
-        answer = _decompress_sdp(response_code)
+        self._logging and logger.debug("Decoding response code...")
+        answer = decompress_sdp(response_code)
 
-        self.__logging and logger.debug("Setting remote answer...")
+        self._logging and logger.debug("Setting remote answer...")
         self.__rtc.set_answer(answer)
 
         self.__is_streaming = True
-        self.__logging and logger.info(
+        self._logging and logger.info(
             "Connection process started. Waiting for peer-to-peer link..."
         )
-
-    def get_local_frame(self) -> Optional[NDArray]:
-        if not self.__media_started:
-            return None
-        return self.__video.read()
 
     def get_remote_frame(self) -> Optional[NDArray]:
         with self.__frame_lock:
@@ -301,7 +217,7 @@ class PeerConference:
         return self.__is_connected
 
     def stop(self):
-        self.__logging and logger.debug("Stopping PeerConference")
+        self._logging and logger.debug("Stopping PeerConference")
 
         self.__is_streaming = False
         self.__is_connected = False
@@ -310,14 +226,10 @@ class PeerConference:
             self.__rtc.stop()
             self.__rtc = None
 
-        if self.__media_started:
-            self.__video.stop()
-            if self.__audio:
-                self.__audio.stop()
-            self.__media_started = False
+        self._stop_local_media()
 
         with self.__frame_lock:
             self.__last_remote_frame = None
             self.__last_remote_audio = None
 
-        self.__logging and logger.debug("PeerConference stopped")
+        self._logging and logger.debug("PeerConference stopped")
