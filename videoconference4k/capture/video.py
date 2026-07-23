@@ -98,6 +98,22 @@ class VideoCapture:
         (grabbed, self.frame) = self.stream.read()
 
         if grabbed:
+            if self.__logging:
+                neg_w = int(self.stream.get(cv2.CAP_PROP_FRAME_WIDTH))
+                neg_h = int(self.stream.get(cv2.CAP_PROP_FRAME_HEIGHT))
+                neg_fps = self.stream.get(cv2.CAP_PROP_FPS)
+                neg_cc = int(self.stream.get(cv2.CAP_PROP_FOURCC))
+                neg_cc = (
+                    "".join(chr((neg_cc >> (8 * i)) & 0xFF) for i in range(4)).strip()
+                    if neg_cc
+                    else "N/A"
+                )
+                logger.info(
+                    "Negotiated capture format: {}x{} @ {:.0f} fps (FOURCC: {}).".format(
+                        neg_w, neg_h, neg_fps, neg_cc
+                    )
+                )
+
             if not (self.color_space is None):
                 self.frame = cv2.cvtColor(self.frame, self.color_space)
 
