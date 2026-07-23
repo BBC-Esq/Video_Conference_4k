@@ -290,6 +290,11 @@ class PeerConference(BaseConference, CallbackRegistrar):
             time.sleep(0.1)
         return self.__is_connected
 
+    def get_stats(self) -> dict:
+        if self.__rtc is None:
+            return {}
+        return self.__rtc.get_connection_stats()
+
     def stop(self):
         self._logging and logger.debug("Stopping PeerConference")
 

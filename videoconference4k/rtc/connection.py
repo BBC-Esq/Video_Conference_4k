@@ -70,6 +70,39 @@ def _prefer_h264(pc) -> None:
             except Exception:
                 pass
 
+
+def _parse_connection_stats(stats_iterable) -> dict:
+    result = {
+        "video": {"bytes_sent": 0, "packets_sent": 0, "packets_received": 0, "packets_lost": 0, "jitter": None},
+        "audio": {"bytes_sent": 0, "packets_sent": 0, "packets_received": 0, "packets_lost": 0, "jitter": None},
+        "round_trip_time": None,
+        "fraction_lost": None,
+        "dtls_state": None,
+        "bytes_sent": 0,
+        "bytes_received": 0,
+    }
+    for stat in stats_iterable:
+        stat_type = getattr(stat, "type", None)
+        kind = getattr(stat, "kind", None)
+        bucket = result[kind] if kind in ("video", "audio") else None
+
+        if stat_type == "outbound-rtp" and bucket is not None:
+            bucket["bytes_sent"] += getattr(stat, "bytesSent", 0)
+            bucket["packets_sent"] += getattr(stat, "packetsSent", 0)
+        elif stat_type == "inbound-rtp" and bucket is not None:
+            bucket["packets_received"] += getattr(stat, "packetsReceived", 0)
+            bucket["packets_lost"] += getattr(stat, "packetsLost", 0)
+            bucket["jitter"] = getattr(stat, "jitter", None)
+        elif stat_type == "remote-inbound-rtp":
+            result["round_trip_time"] = getattr(stat, "roundTripTime", None)
+            result["fraction_lost"] = getattr(stat, "fractionLost", None)
+        elif stat_type == "transport":
+            result["dtls_state"] = getattr(stat, "dtlsState", None)
+            result["bytes_sent"] = getattr(stat, "bytesSent", 0)
+            result["bytes_received"] = getattr(stat, "bytesReceived", 0)
+
+    return result
+
 AUDIO_SPECIFIC_OPTIONS = {
     "input_device",
     "output_device",
@@ -409,6 +442,16 @@ class RTCConnection:
     def set_answer(self, answer: dict) -> None:
         self.__logging and logger.debug("Setting answer.")
         self.__run_coroutine(self.__set_answer_async(answer))
+
+    def get_connection_stats(self) -> dict:
+        if self.__pc is None or self.__loop is None or not self.__loop.is_running():
+            return {}
+        try:
+            report = self.__run_coroutine(self.__pc.getStats())
+        except Exception as e:
+            self.__logging and logger.error("getStats failed: {}".format(e))
+            return {}
+        return _parse_connection_stats(report.values())
 
     def offer_to_json(self, offer: dict) -> str:
         return json.dumps(offer)
