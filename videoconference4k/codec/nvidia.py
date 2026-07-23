@@ -56,12 +56,13 @@ def bgr_to_nv12(bgr_frame: NDArray) -> NDArray:
     u = yuv_i420[height:height + height // 4].reshape(height // 2, width // 2)
     v = yuv_i420[height + height // 4:].reshape(height // 2, width // 2)
 
-    uv = np.empty((height // 2, width), dtype=np.uint8)
+    nv12 = np.empty((height * 3 // 2, width), dtype=np.uint8)
+    nv12[:height] = y
+    uv = nv12[height:]
     uv[:, 0::2] = u
     uv[:, 1::2] = v
 
-    nv12 = np.vstack([y, uv])
-    return nv12.flatten().astype(np.uint8)
+    return nv12.reshape(-1)
 
 
 def nv12_to_bgr(nv12_data: NDArray, width: int, height: int) -> NDArray:
