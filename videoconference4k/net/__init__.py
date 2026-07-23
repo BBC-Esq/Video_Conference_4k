@@ -1,6 +1,7 @@
 from .sync import SyncTransport
 from .async_ import AsyncTransport
 from .audio import AudioTransport
+from .upnp import UPnPPortMapper, discover_igd, get_local_ip
 from .compression import CompressionHandler, CompressionType
 from .base import (
     validate_pattern,
@@ -24,6 +25,9 @@ __all__ = [
     "SyncTransport",
     "AsyncTransport",
     "AudioTransport",
+    "UPnPPortMapper",
+    "discover_igd",
+    "get_local_ip",
     "CompressionHandler",
     "CompressionType",
     "validate_pattern",
