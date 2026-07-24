@@ -1,5 +1,6 @@
 from .peer import PeerConference
 from .multipeer import MultiPeerConference
+from .direct import DirectConference
 from .base import (
     BaseConference,
     CallbackRegistrar,
@@ -12,6 +13,7 @@ from .base import (
 __all__ = [
     "PeerConference",
     "MultiPeerConference",
+    "DirectConference",
     "BaseConference",
     "CallbackRegistrar",
     "compress_sdp",
