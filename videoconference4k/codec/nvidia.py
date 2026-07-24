@@ -45,9 +45,27 @@ def get_nvidia_info() -> dict:
     return info
 
 
-def bgr_to_nv12(bgr_frame: NDArray) -> NDArray:
+def bgr_to_nv12_into(bgr_frame: NDArray, i420: NDArray, nv12: NDArray) -> NDArray:
     import cv2
 
+    height, width = bgr_frame.shape[:2]
+
+    cv2.cvtColor(bgr_frame, cv2.COLOR_BGR2YUV_I420, dst=i420)
+    flat = i420.reshape(-1)
+
+    luma_size = height * width
+    chroma_size = (height // 2) * (width // 2)
+
+    u = flat[luma_size:luma_size + chroma_size].reshape(height // 2, width // 2)
+    v = flat[luma_size + chroma_size:luma_size + 2 * chroma_size].reshape(height // 2, width // 2)
+
+    nv12[:height] = flat[:luma_size].reshape(height, width)
+    cv2.merge([u, v], dst=nv12[height:].reshape(height // 2, width // 2, 2))
+
+    return nv12.reshape(-1)
+
+
+def bgr_to_nv12(bgr_frame: NDArray) -> NDArray:
     height, width = bgr_frame.shape[:2]
 
     if height % 2 or width % 2:
@@ -57,22 +75,10 @@ def bgr_to_nv12(bgr_frame: NDArray) -> NDArray:
             )
         )
 
-    yuv_i420 = cv2.cvtColor(bgr_frame, cv2.COLOR_BGR2YUV_I420).reshape(-1)
-
-    luma_size = height * width
-    chroma_size = (height // 2) * (width // 2)
-
-    y = yuv_i420[:luma_size].reshape(height, width)
-    u = yuv_i420[luma_size:luma_size + chroma_size].reshape(height // 2, width // 2)
-    v = yuv_i420[luma_size + chroma_size:luma_size + 2 * chroma_size].reshape(height // 2, width // 2)
-
+    i420 = np.empty((height * 3 // 2, width), dtype=np.uint8)
     nv12 = np.empty((height * 3 // 2, width), dtype=np.uint8)
-    nv12[:height] = y
-    uv = nv12[height:]
-    uv[:, 0::2] = u
-    uv[:, 1::2] = v
 
-    return nv12.reshape(-1)
+    return bgr_to_nv12_into(bgr_frame, i420, nv12)
 
 
 def _decoded_frame_to_ndarray(frame) -> Optional[NDArray]:
@@ -114,6 +120,16 @@ class NvidiaEncoder(BaseEncoder):
         self._framerate = framerate
         self._codec = codec
         self._encoder = None
+
+        if height % 2 or width % 2:
+            raise ValueError(
+                "[NvidiaEncoder:ERROR] :: NV12 requires even frame dimensions, got {}x{}.".format(
+                    width, height
+                )
+            )
+
+        self._i420_scratch = np.empty((height * 3 // 2, width), dtype=np.uint8)
+        self._nv12_buffer = np.empty((height * 3 // 2, width), dtype=np.uint8)
 
         import_dependency_safe("PyNvVideoCodec" if nvc is None else "")
 
@@ -197,7 +213,7 @@ class NvidiaEncoder(BaseEncoder):
         if bgr_frame.shape[1] != self._width or bgr_frame.shape[0] != self._height:
             bgr_frame = cv2.resize(bgr_frame, (self._width, self._height))
 
-        nv12_data = bgr_to_nv12(bgr_frame)
+        nv12_data = bgr_to_nv12_into(bgr_frame, self._i420_scratch, self._nv12_buffer)
 
         encoded_packets = self._encoder.Encode(nv12_data)
 
