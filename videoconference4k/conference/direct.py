@@ -130,6 +130,12 @@ class DirectConference:
         self.__abr_prev_dropped = 0
         self.__abr_prev_bytes = 0
 
+        self.__shed_level = 0
+        self.__shed_max = 3
+        self.__shed_threshold = 0.15
+        self.__shed_counter = 0
+        self.__frames_source_shed = 0
+
     @property
     def is_running(self) -> bool:
         return self.__is_running
@@ -209,7 +215,13 @@ class DirectConference:
             if frame is not None:
                 with self.__frame_lock:
                     self.__local_frame = frame
-                if seq is None or seq != last_seq:
+                shed = False
+                if self.__shed_level > 0:
+                    self.__shed_counter += 1
+                    shed = (self.__shed_counter % (self.__shed_level + 1)) != 0
+                if shed:
+                    self.__frames_source_shed += 1
+                elif seq is None or seq != last_seq:
                     last_seq = seq
                     try:
                         self.__send_video.send(frame, pts_ns=pts_ns)
@@ -273,6 +285,12 @@ class DirectConference:
                         new_target // 1000, drop_frac, goodput_bps / 1000
                     )
                 )
+
+        at_floor = self.__abr_target <= int(self.__abr_min * 1.05)
+        if drop_frac > self.__shed_threshold and at_floor:
+            self.__shed_level = min(self.__shed_max, self.__shed_level + 1)
+        elif drop_frac <= 0.0 and self.__shed_level > 0:
+            self.__shed_level = max(0, self.__shed_level - 1)
 
     def __video_recv_loop(self) -> None:
         while not self.__terminate.is_set():
@@ -366,6 +384,8 @@ class DirectConference:
             "send_kbps": round(send_kbps, 1),
             "target_bitrate": self.__abr_target,
             "adaptive_bitrate": self.__adaptive_bitrate,
+            "shed_level": self.__shed_level,
+            "frames_source_shed": self.__frames_source_shed,
             "lipsync": self.__lipsync and self.__audio is not None,
         }
 
