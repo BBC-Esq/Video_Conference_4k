@@ -102,6 +102,19 @@ class CompressionHandler:
     def is_enabled(self) -> bool:
         return self._use_nvidia or self._use_software or self._use_jpeg
 
+    @property
+    def supports_dynamic_bitrate(self) -> bool:
+        if self._use_nvidia and self._nvidia_encoder is not None:
+            return self._nvidia_encoder.supports_dynamic_bitrate
+        return False
+
+    def reconfigure_bitrate(self, bitrate: int, maxbitrate: Optional[int] = None) -> bool:
+        if self._use_nvidia and self._nvidia_encoder is not None:
+            if self._nvidia_encoder.reconfigure_bitrate(bitrate, maxbitrate):
+                self._gpu_bitrate = int(bitrate)
+                return True
+        return False
+
     def configure_jpeg(
         self,
         enabled: Optional[bool] = None,

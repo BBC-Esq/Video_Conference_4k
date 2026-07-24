@@ -162,6 +162,9 @@ class NvidiaEncoder(BaseEncoder):
         if gpu_id > 0:
             encoder_params["gpu_id"] = gpu_id
 
+        self._bitrate = bitrate
+        self._maxbitrate = max_bitrate
+
         core_keys = ("preset", "tuning_info", "fps", "gop", "rc", "bitrate", "maxbitrate")
         core_params = {k: v for k, v in encoder_params.items() if k in core_keys}
 
@@ -207,6 +210,37 @@ class NvidiaEncoder(BaseEncoder):
     @property
     def codec(self) -> str:
         return self._codec
+
+    @property
+    def bitrate(self) -> int:
+        return self._bitrate
+
+    @property
+    def supports_dynamic_bitrate(self) -> bool:
+        return self._encoder is not None and hasattr(self._encoder, "Reconfigure") and hasattr(
+            self._encoder, "GetEncodeReconfigureParams"
+        )
+
+    def reconfigure_bitrate(self, bitrate: int, maxbitrate: Optional[int] = None) -> bool:
+        if not self.supports_dynamic_bitrate:
+            return False
+        bitrate = int(bitrate)
+        maxbitrate = int(maxbitrate) if maxbitrate else bitrate
+        fps = self._framerate if self._framerate > 0 else 30
+        try:
+            params = self._encoder.GetEncodeReconfigureParams()
+            params.averageBitrate = bitrate
+            params.maxBitRate = maxbitrate
+            params.vbvBufferSize = int(maxbitrate / fps * 1.1)
+            params.vbvInitialDelay = int(maxbitrate / fps)
+            if not bool(self._encoder.Reconfigure(params)):
+                return False
+        except Exception as e:
+            self._logging and logger.error("NVENC bitrate reconfigure failed: {}".format(e))
+            return False
+        self._bitrate = bitrate
+        self._maxbitrate = maxbitrate
+        return True
 
     def encode(self, bgr_frame: NDArray) -> bytes:
         import cv2

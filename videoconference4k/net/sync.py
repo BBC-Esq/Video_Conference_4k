@@ -1055,6 +1055,13 @@ class SyncTransport:
     def reconnects(self) -> int:
         return self.__reconnects
 
+    @property
+    def supports_dynamic_bitrate(self) -> bool:
+        return self.__compression_handler.supports_dynamic_bitrate
+
+    def reconfigure_bitrate(self, bitrate: int, maxbitrate: Any = None) -> bool:
+        return self.__compression_handler.reconfigure_bitrate(bitrate, maxbitrate)
+
     def signal_stop(self) -> None:
         self.__terminate.set()
 

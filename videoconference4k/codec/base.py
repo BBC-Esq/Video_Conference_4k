@@ -57,6 +57,13 @@ class BaseEncoder(ABC):
     def close(self) -> None:
         pass
 
+    @property
+    def supports_dynamic_bitrate(self) -> bool:
+        return False
+
+    def reconfigure_bitrate(self, bitrate: int, maxbitrate: Optional[int] = None) -> bool:
+        return False
+
     def get_compression_metadata(self) -> dict:
         return {
             "type": self.codec_type,
