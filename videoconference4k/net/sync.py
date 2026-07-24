@@ -114,6 +114,9 @@ class SyncTransport:
         self.__last_video_pts = 0
         self.__rx_pts_fifo = deque()
         self.__rx_pts_queue = deque()
+        self.__bytes_sent = 0
+        self.__frames_sent = 0
+        self.__reconnects = 0
         overwrite_cert = False
         custom_cert_location = ""
 
@@ -653,6 +656,7 @@ class SyncTransport:
                     self.__msg_socket.close(linger=0)
                     self.__poll.unregister(self.__msg_socket)
                     self.__max_retries -= 1
+                    self.__reconnects += 1
 
                     if not self.__max_retries:
                         if self.__multiserver_mode:
@@ -916,6 +920,8 @@ class SyncTransport:
             copy=self.__msg_copy,
             track=self.__msg_track,
         )
+        self.__bytes_sent += len(encoded_data)
+        self.__frames_sent += 1
 
         if self.__pattern < 2:
             if self.__bi_mode or self.__multiclient_mode:
@@ -930,6 +936,7 @@ class SyncTransport:
                     self.__msg_socket.close()
                     self.__poll.unregister(self.__msg_socket)
                     self.__max_retries -= 1
+                    self.__reconnects += 1
 
                     if not self.__max_retries:
                         if self.__multiclient_mode:
@@ -1007,6 +1014,7 @@ class SyncTransport:
                     self.__msg_socket.close()
                     self.__poll.unregister(self.__msg_socket)
                     self.__max_retries -= 1
+                    self.__reconnects += 1
 
                     if not self.__max_retries:
                         logger.error("Client failed to respond on repeated attempts.")
@@ -1034,6 +1042,18 @@ class SyncTransport:
     @property
     def last_video_pts(self) -> int:
         return self.__last_video_pts
+
+    @property
+    def bytes_sent(self) -> int:
+        return self.__bytes_sent
+
+    @property
+    def frames_sent(self) -> int:
+        return self.__frames_sent
+
+    @property
+    def reconnects(self) -> int:
+        return self.__reconnects
 
     def signal_stop(self) -> None:
         self.__terminate.set()

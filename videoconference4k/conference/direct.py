@@ -110,6 +110,9 @@ class DirectConference:
         self.__join_timeout = 6.0
         self.__frames_skipped = 0
         self.__frames_dropped = 0
+        self.__frames_lagged = 0
+        self.__stats_prev_bytes = 0
+        self.__stats_prev_time = None
 
     @property
     def is_running(self) -> bool:
@@ -184,6 +187,7 @@ class DirectConference:
                 frame, pts_ns, seq = read_timed()
             else:
                 frame, pts_ns, seq = self.__video_source.read(), time.perf_counter_ns(), None
+            proc_start = time.perf_counter()
             if frame is not None:
                 with self.__frame_lock:
                     self.__local_frame = frame
@@ -195,6 +199,8 @@ class DirectConference:
                         self.__logging and logger.debug("Video send error: {}".format(e))
                 else:
                     self.__frames_skipped += 1
+                if interval > 0 and (time.perf_counter() - proc_start) > interval:
+                    self.__frames_lagged += 1
             wait = interval - (time.perf_counter() - start)
             if wait > 0:
                 self.__terminate.wait(wait)
@@ -260,11 +266,33 @@ class DirectConference:
     def stats(self) -> dict:
         with self.__frame_lock:
             hold_depth = len(self.__video_hold)
+
+        bytes_sent = self.__send_video.bytes_sent if self.__send_video is not None else 0
+        frames_sent = self.__send_video.frames_sent if self.__send_video is not None else 0
+        reconnects = 0
+        for transport in (self.__send_video, self.__recv_video):
+            if transport is not None:
+                reconnects += transport.reconnects
+
+        now = time.perf_counter()
+        send_kbps = 0.0
+        if self.__stats_prev_time is not None:
+            elapsed = now - self.__stats_prev_time
+            if elapsed > 0:
+                send_kbps = (bytes_sent - self.__stats_prev_bytes) * 8.0 / elapsed / 1000.0
+        self.__stats_prev_time = now
+        self.__stats_prev_bytes = bytes_sent
+
         return {
             "audio_playout_pts_ns": self.__audio.playout_pts_ns() if self.__audio is not None else None,
             "video_hold_depth": hold_depth,
+            "frames_sent": frames_sent,
             "frames_skipped": self.__frames_skipped,
             "frames_dropped": self.__frames_dropped,
+            "frames_lagged": self.__frames_lagged,
+            "reconnects": reconnects,
+            "bytes_sent": bytes_sent,
+            "send_kbps": round(send_kbps, 1),
             "lipsync": self.__lipsync and self.__audio is not None,
         }
 
