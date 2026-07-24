@@ -10,6 +10,7 @@ from ..utils.common import (
     import_dependency_safe,
     log_version,
 )
+from .jitter import JitterBuffer
 
 sd = import_dependency_safe("sounddevice", error="silent")
 
@@ -30,6 +31,7 @@ class AudioCapture:
         dtype: str = "int16",
         enable_input: bool = True,
         enable_output: bool = True,
+        output_jitter_ms: float = 0.0,
         logging: bool = False,
         **options: dict
     ):
@@ -54,6 +56,17 @@ class AudioCapture:
         self.__output_residual = None
         self.__subscribers = []
         self.__subscribers_lock = threading.Lock()
+
+        self.__jitter = None
+        self.__jitter_lock = threading.Lock()
+        if enable_output and output_jitter_ms and output_jitter_ms > 0:
+            self.__jitter = JitterBuffer(
+                sample_rate=sample_rate,
+                channels=channels,
+                target_ms=output_jitter_ms,
+                max_ms=output_jitter_ms + 120.0,
+                dtype=dtype,
+            )
 
         self.__input_stream = None
         self.__output_stream = None
@@ -152,6 +165,16 @@ class AudioCapture:
             self.__logging and logger.warning("Output status: {}".format(status))
         out_channels = outdata.shape[1] if outdata.ndim > 1 else 1
         needed = outdata.shape[0]
+
+        if self.__jitter is not None:
+            with self.__jitter_lock:
+                samples = self.__jitter.pop(needed)
+            outdata[:] = self.__adapt_channels(samples, out_channels)[:needed]
+            if np.issubdtype(outdata.dtype, np.floating):
+                np.nan_to_num(outdata, copy=False, nan=0.0, posinf=1.0, neginf=-1.0)
+                np.clip(outdata, -1.0, 1.0, out=outdata)
+            return
+
         filled = 0
 
         while filled < needed:
@@ -256,6 +279,19 @@ class AudioCapture:
         except queue.Empty:
             return None
 
+    def write_timed(self, audio_data: NDArray, pts_ns: int) -> bool:
+        if not self.__enable_output:
+            logger.warning("Output is not enabled.")
+            return False
+        if not isinstance(audio_data, np.ndarray):
+            logger.warning("Invalid audio data type. Expected numpy array.")
+            return False
+        if self.__jitter is not None:
+            with self.__jitter_lock:
+                self.__jitter.insert(audio_data, pts_ns)
+            return True
+        return self.write(audio_data)
+
     def write(self, audio_data: NDArray) -> bool:
         if not self.__enable_output:
             logger.warning("Output is not enabled.")
@@ -263,6 +299,10 @@ class AudioCapture:
         if not isinstance(audio_data, np.ndarray):
             logger.warning("Invalid audio data type. Expected numpy array.")
             return False
+        if self.__jitter is not None:
+            with self.__jitter_lock:
+                self.__jitter.insert(audio_data, None)
+            return True
         try:
             self.__output_queue.put_nowait(audio_data)
             return True
@@ -283,6 +323,9 @@ class AudioCapture:
             return False
 
     def clear_output_queue(self) -> None:
+        if self.__jitter is not None:
+            with self.__jitter_lock:
+                self.__jitter.reset()
         while not self.__output_queue.empty():
             try:
                 self.__output_queue.get_nowait()

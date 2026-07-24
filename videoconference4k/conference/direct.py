@@ -33,6 +33,7 @@ class DirectConference:
         gpu_bitrate: int = 8000000,
         enable_audio: bool = True,
         audio_bitrate: int = 32000,
+        audio_jitter_ms: float = 80.0,
         enable_upnp: bool = False,
         logging: bool = False,
     ):
@@ -51,6 +52,7 @@ class DirectConference:
         self.__gpu_bitrate = gpu_bitrate
         self.__enable_audio = enable_audio
         self.__audio_bitrate = audio_bitrate
+        self.__audio_jitter_ms = audio_jitter_ms
         self.__enable_upnp = enable_upnp
 
         self.__owns_video_source = False
@@ -77,6 +79,7 @@ class DirectConference:
                 channels=1,
                 enable_input=True,
                 enable_output=True,
+                output_jitter_ms=self.__audio_jitter_ms,
                 logging=logging,
             )
 
@@ -211,8 +214,8 @@ class DirectConference:
         while not self.__terminate.is_set():
             received = self.__recv_audio.recv()
             if received is not None:
-                chunk, _ = received
-                self.__audio.write(chunk)
+                chunk, pts_ns = received
+                self.__audio.write_timed(chunk, pts_ns)
             else:
                 self.__terminate.wait(0.005)
 
