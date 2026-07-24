@@ -16,6 +16,26 @@ from typing import Optional
 from ..version import __version__
 
 
+def raise_timer_resolution(period_ms: int = 1) -> bool:
+    if not sys.platform.startswith("win"):
+        return False
+    try:
+        import ctypes
+        return ctypes.windll.winmm.timeBeginPeriod(int(period_ms)) == 0
+    except Exception:
+        return False
+
+
+def restore_timer_resolution(period_ms: int = 1) -> None:
+    if not sys.platform.startswith("win"):
+        return
+    try:
+        import ctypes
+        ctypes.windll.winmm.timeEndPeriod(int(period_ms))
+    except Exception:
+        pass
+
+
 def set_cuda_paths():
     from pathlib import Path
 

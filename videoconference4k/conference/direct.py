@@ -10,7 +10,7 @@ from ..capture.audio import AudioCapture
 from ..net.sync import SyncTransport
 from ..net.audio import AudioTransport
 from ..net.upnp import UPnPPortMapper
-from ..utils.common import get_logger, log_version
+from ..utils.common import get_logger, log_version, raise_timer_resolution, restore_timer_resolution
 
 logger = get_logger("DirectConference")
 
@@ -113,6 +113,7 @@ class DirectConference:
         self.__frames_lagged = 0
         self.__stats_prev_bytes = 0
         self.__stats_prev_time = None
+        self.__timer_raised = False
 
     @property
     def is_running(self) -> bool:
@@ -125,6 +126,8 @@ class DirectConference:
     def start(self) -> "DirectConference":
         if self.__is_running:
             return self
+
+        self.__timer_raised = raise_timer_resolution(1)
 
         if self.__enable_upnp:
             self.__upnp = UPnPPortMapper(description="VideoConference4k", logging=self.__logging)
@@ -339,6 +342,9 @@ class DirectConference:
         self.__send_video = self.__recv_video = None
         self.__send_audio = self.__recv_audio = None
         self.__is_running = False
+        if self.__timer_raised:
+            restore_timer_resolution(1)
+            self.__timer_raised = False
         with self.__frame_lock:
             self.__remote_frame = None
             self.__local_frame = None
