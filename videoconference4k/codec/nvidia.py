@@ -50,11 +50,21 @@ def bgr_to_nv12(bgr_frame: NDArray) -> NDArray:
 
     height, width = bgr_frame.shape[:2]
 
-    yuv_i420 = cv2.cvtColor(bgr_frame, cv2.COLOR_BGR2YUV_I420)
+    if height % 2 or width % 2:
+        raise ValueError(
+            "[NvidiaEncoder:ERROR] :: NV12 requires even frame dimensions, got {}x{}.".format(
+                width, height
+            )
+        )
 
-    y = yuv_i420[:height, :]
-    u = yuv_i420[height:height + height // 4].reshape(height // 2, width // 2)
-    v = yuv_i420[height + height // 4:].reshape(height // 2, width // 2)
+    yuv_i420 = cv2.cvtColor(bgr_frame, cv2.COLOR_BGR2YUV_I420).reshape(-1)
+
+    luma_size = height * width
+    chroma_size = (height // 2) * (width // 2)
+
+    y = yuv_i420[:luma_size].reshape(height, width)
+    u = yuv_i420[luma_size:luma_size + chroma_size].reshape(height // 2, width // 2)
+    v = yuv_i420[luma_size + chroma_size:luma_size + 2 * chroma_size].reshape(height // 2, width // 2)
 
     nv12 = np.empty((height * 3 // 2, width), dtype=np.uint8)
     nv12[:height] = y
