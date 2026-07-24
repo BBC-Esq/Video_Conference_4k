@@ -159,7 +159,7 @@ class AudioCapture:
                 if in_channels == 1 and out_channels > 1:
                     data = np.tile(data, (1, out_channels))
                 elif in_channels > 1 and out_channels == 1:
-                    data = data[:, 0:1]
+                    data = data.mean(axis=1, keepdims=True).astype(data.dtype)
                 else:
                     data = data[:, :out_channels] if in_channels > out_channels else np.pad(
                         data, ((0, 0), (0, out_channels - in_channels)), mode='constant'
