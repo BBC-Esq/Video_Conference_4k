@@ -135,26 +135,29 @@ class NvidiaEncoder(BaseEncoder):
         if gpu_id > 0:
             encoder_params["gpu_id"] = gpu_id
 
+        core_keys = ("preset", "tuning_info", "fps", "gop", "rc", "bitrate", "maxbitrate")
+        core_params = {k: v for k, v in encoder_params.items() if k in core_keys}
+
         try:
             self._encoder = nvc.CreateEncoder(
-                width,
-                height,
-                "NV12",
-                True,
-                codec=codec,
-                **encoder_params
+                width, height, "NV12", True, codec=codec, **encoder_params
             )
-        except Exception as e:
-            self._encoder = nvc.CreateEncoder(
-                width,
-                height,
-                "NV12",
-                True,
-                codec=codec,
+        except Exception as full_error:
+            logger.error(
+                "NVENC rejected the full encoder configuration ({}); "
+                "retrying without the optional low-latency tuning.".format(full_error)
             )
-            self._logging and logger.warning(
-                "Created encoder with default parameters: {}".format(e)
-            )
+            try:
+                self._encoder = nvc.CreateEncoder(
+                    width, height, "NV12", True, codec=codec, **core_params
+                )
+            except Exception as core_error:
+                logger.error(
+                    "NVENC rejected the rate-control configuration at {}x{} ({}).".format(
+                        width, height, core_error
+                    )
+                )
+                raise
 
         self._logging and logger.debug(
             "NvidiaEncoder initialized: {}x{} @ {}fps, codec={}, rate_control={}".format(
