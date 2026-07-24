@@ -1,6 +1,7 @@
 import queue
 import threading
 import time
+from collections import deque
 from typing import Optional, Tuple, Any, Union
 from numpy.typing import NDArray
 
@@ -34,6 +35,9 @@ class DirectConference:
         enable_audio: bool = True,
         audio_bitrate: int = 32000,
         audio_jitter_ms: float = 80.0,
+        lipsync: bool = True,
+        audio_sync_offset_ms: float = 0.0,
+        lipsync_deadband_ms: float = 40.0,
         enable_upnp: bool = False,
         logging: bool = False,
     ):
@@ -94,11 +98,18 @@ class DirectConference:
         self.__local_frame: Optional[NDArray] = None
         self.__frame_lock = threading.Lock()
 
+        self.__lipsync = lipsync
+        self.__audio_sync_offset_ns = int(audio_sync_offset_ms * 1e6)
+        self.__lipsync_deadband_ns = int(lipsync_deadband_ms * 1e6)
+        self.__video_hold = deque()
+        self.__video_hold_cap = 300
+
         self.__terminate = threading.Event()
         self.__threads = []
         self.__is_running = False
         self.__join_timeout = 6.0
         self.__frames_skipped = 0
+        self.__frames_dropped = 0
 
     @property
     def is_running(self) -> bool:
@@ -196,8 +207,11 @@ class DirectConference:
                 break
             if frame is None:
                 break
+            pts_ns = self.__recv_video.last_video_pts
             with self.__frame_lock:
                 self.__remote_frame = frame
+                if len(self.__video_hold) < self.__video_hold_cap:
+                    self.__video_hold.append((pts_ns, frame))
 
     def __audio_send_loop(self) -> None:
         while not self.__terminate.is_set():
@@ -220,8 +234,39 @@ class DirectConference:
                 self.__terminate.wait(0.005)
 
     def get_remote_frame(self) -> Optional[NDArray]:
+        target = None
+        if self.__lipsync and self.__audio is not None:
+            playout = self.__audio.playout_pts_ns()
+            if playout is not None:
+                target = playout - self.__audio_sync_offset_ns
+
         with self.__frame_lock:
+            if target is None:
+                if self.__video_hold:
+                    self.__remote_frame = self.__video_hold[-1][1]
+                    self.__video_hold.clear()
+                return self.__remote_frame
+
+            deadline = target + self.__lipsync_deadband_ns
+            released = 0
+            while self.__video_hold and self.__video_hold[0][0] <= deadline:
+                _, frame = self.__video_hold.popleft()
+                self.__remote_frame = frame
+                released += 1
+            if released > 1:
+                self.__frames_dropped += released - 1
             return self.__remote_frame
+
+    def stats(self) -> dict:
+        with self.__frame_lock:
+            hold_depth = len(self.__video_hold)
+        return {
+            "audio_playout_pts_ns": self.__audio.playout_pts_ns() if self.__audio is not None else None,
+            "video_hold_depth": hold_depth,
+            "frames_skipped": self.__frames_skipped,
+            "frames_dropped": self.__frames_dropped,
+            "lipsync": self.__lipsync and self.__audio is not None,
+        }
 
     def get_local_frame(self) -> Optional[NDArray]:
         with self.__frame_lock:
@@ -269,4 +314,5 @@ class DirectConference:
         with self.__frame_lock:
             self.__remote_frame = None
             self.__local_frame = None
+            self.__video_hold.clear()
         self.__logging and logger.debug("DirectConference stopped.")

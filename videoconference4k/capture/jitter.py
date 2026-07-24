@@ -42,6 +42,12 @@ class JitterBuffer:
     def depth_ms(self) -> float:
         return self.depth * 1000.0 / self._sr
 
+    @property
+    def playout_pts_ns(self):
+        if self._base_ts is None or not self._primed:
+            return None
+        return self._base_ts + int(self._play_idx * 1e9 / self._sr)
+
     def _shape(self, pcm: NDArray) -> NDArray:
         pcm = np.asarray(pcm)
         if pcm.dtype != self._dtype:

@@ -112,6 +112,12 @@ class AudioCapture:
     def is_running(self) -> bool:
         return self.__is_running
 
+    def playout_pts_ns(self):
+        if self.__jitter is None:
+            return None
+        with self.__jitter_lock:
+            return self.__jitter.playout_pts_ns
+
     @staticmethod
     def get_devices() -> dict:
         import_dependency_safe("sounddevice" if sd is None else "")
