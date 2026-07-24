@@ -150,22 +150,23 @@ class VideoCapture:
         )
 
         self.stream = None
+        self.__capture_failed = False
 
-        if backend and isinstance(backend, int):
-            if check_CV_version() == 3:
-                self.stream = cv2.VideoCapture(source + backend)
-            else:
-                self.stream = cv2.VideoCapture(source, backend)
-            logger.info("Setting backend `{}` for this source.".format(backend))
-        else:
-            self.stream = cv2.VideoCapture(source)
-
-        self.color_space = None
+        self.__max_read_failures = options.pop("MAX_READ_FAILURES", 5)
+        self.__max_reopen_attempts = options.pop("MAX_REOPEN_ATTEMPTS", 3)
 
         options = {str(k).strip(): v for k, v in options.items()}
-        for key, value in options.items():
-            property = capPropId(key)
-            not (property is None) and self.stream.set(property, value)
+
+        self.__source = source
+        self.__backend = backend
+        self.__cap_options = dict(options)
+
+        if backend and isinstance(backend, int):
+            logger.info("Setting backend `{}` for this source.".format(backend))
+
+        self.stream = self.__open_stream()
+
+        self.color_space = None
 
         if not (colorspace is None):
             self.color_space = capPropId(colorspace.strip())
@@ -206,6 +207,11 @@ class VideoCapture:
 
             self.__threaded_queue_mode and self.__queue.put(self.frame)
         else:
+            try:
+                self.stream.release()
+            except Exception:
+                pass
+            self.stream = None
             raise RuntimeError(
                 "[VideoCapture:ERROR] :: Source is invalid, VideoCapture failed to initialize stream on this source!"
             )
@@ -224,6 +230,44 @@ class VideoCapture:
     def is_running(self) -> bool:
         return self.__is_running
 
+    @property
+    def capture_failed(self) -> bool:
+        return self.__capture_failed
+
+    def __open_stream(self):
+        if self.__backend and isinstance(self.__backend, int):
+            if check_CV_version() == 3:
+                stream = cv2.VideoCapture(self.__source + self.__backend)
+            else:
+                stream = cv2.VideoCapture(self.__source, self.__backend)
+        else:
+            stream = cv2.VideoCapture(self.__source)
+
+        for key, value in self.__cap_options.items():
+            prop = capPropId(key, logging=False)
+            prop is not None and stream.set(prop, value)
+        return stream
+
+    def __reopen_stream(self) -> bool:
+        try:
+            if self.stream is not None:
+                self.stream.release()
+        except Exception:
+            pass
+        self.stream = None
+        try:
+            stream = self.__open_stream()
+            grabbed, frame = stream.read()
+            if grabbed:
+                self.stream = stream
+                with self.__frame_lock:
+                    self.frame = frame
+                return True
+            stream.release()
+        except Exception as e:
+            logger.error("Camera reopen failed: {}".format(e))
+        return False
+
     def start(self) -> T:
         if self.__is_running and self.__thread is not None and self.__thread.is_alive():
             self.__logging and logger.warning("VideoCapture is already running.")
@@ -236,10 +280,16 @@ class VideoCapture:
         return self
 
     def __update(self):
+        consecutive_failures = 0
+        reopen_attempts = 0
+        frame_period = 1.0 / self.framerate if self.framerate > 1.0 else 1.0 / 30.0
+
         while not self.__terminate.is_set():
             self.__stream_read.clear()
 
-            (grabbed, frame) = self.stream.read()
+            grabbed, frame = False, None
+            if self.stream is not None:
+                (grabbed, frame) = self.stream.read()
 
             if not grabbed:
                 if self.__threaded_queue_mode:
@@ -247,8 +297,35 @@ class VideoCapture:
                         break
                     else:
                         continue
-                else:
+
+                consecutive_failures += 1
+                if consecutive_failures <= self.__max_read_failures:
+                    self.__terminate.wait(frame_period)
+                    continue
+
+                if reopen_attempts >= self.__max_reopen_attempts:
+                    logger.error(
+                        "Camera stopped delivering frames and could not be recovered "
+                        "after {} reopen attempts.".format(reopen_attempts)
+                    )
+                    self.__capture_failed = True
                     break
+
+                reopen_attempts += 1
+                logger.warning(
+                    "Camera stopped delivering frames; reopening (attempt {} of {}).".format(
+                        reopen_attempts, self.__max_reopen_attempts
+                    )
+                )
+                if self.__reopen_stream():
+                    logger.info("Camera reopened successfully.")
+                    consecutive_failures = 0
+                else:
+                    self.__terminate.wait(frame_period * 5)
+                continue
+
+            consecutive_failures = 0
+            reopen_attempts = 0
 
             if not (self.color_space is None):
                 color_frame = None
@@ -276,9 +353,17 @@ class VideoCapture:
         self.__stream_read.set()
         self.__is_running = False
 
-        self.stream.release()
+        if self.stream is not None:
+            try:
+                self.stream.release()
+            except Exception:
+                pass
+            self.stream = None
 
     def read(self) -> Optional[NDArray]:
+        if self.__capture_failed:
+            return None
+
         if not self.__is_running:
             self.__logging and logger.warning(
                 "VideoCapture is not running. Returning initial frame. Call start() for continuous capture."
@@ -318,3 +403,10 @@ class VideoCapture:
                     self.__queue.task_done()
             self.__thread.join()
             self.__thread = None
+
+        if self.stream is not None:
+            try:
+                self.stream.release()
+            except Exception:
+                pass
+            self.stream = None
