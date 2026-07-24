@@ -167,16 +167,16 @@ class DirectConference:
         while not self.__terminate.is_set():
             start = time.perf_counter()
             if read_timed is not None:
-                frame, _, seq = read_timed()
+                frame, pts_ns, seq = read_timed()
             else:
-                frame, seq = self.__video_source.read(), None
+                frame, pts_ns, seq = self.__video_source.read(), time.perf_counter_ns(), None
             if frame is not None:
                 with self.__frame_lock:
                     self.__local_frame = frame
                 if seq is None or seq != last_seq:
                     last_seq = seq
                     try:
-                        self.__send_video.send(frame)
+                        self.__send_video.send(frame, pts_ns=pts_ns)
                     except Exception as e:
                         self.__logging and logger.debug("Video send error: {}".format(e))
                 else:

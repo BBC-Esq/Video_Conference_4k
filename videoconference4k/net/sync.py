@@ -109,6 +109,11 @@ class SyncTransport:
         self.__queue_size = 8
         self.__ack_interval = 30
         self.__frames_since_ack = 0
+        self.__pts_fifo = deque()
+        self.__pts_fifo_max = 16
+        self.__last_video_pts = 0
+        self.__rx_pts_fifo = deque()
+        self.__rx_pts_queue = deque()
         overwrite_cert = False
         custom_cert_location = ""
 
@@ -752,8 +757,12 @@ class SyncTransport:
                 if local_return_data:
                     logger.warning("`return_data` is disabled for this pattern!")
 
+            wire_pts = msg_json.get("video_pts", 0)
             compression_info = msg_json.get("compression")
             if compression_info:
+                self.__rx_pts_fifo.append(wire_pts)
+                if len(self.__rx_pts_fifo) > self.__pts_fifo_max:
+                    self.__rx_pts_fifo.popleft()
                 frame = decode_sync_frame(
                     bytes(msg_data),
                     compression_info,
@@ -764,9 +773,11 @@ class SyncTransport:
                 if frame is None:
                     self.__logging and logger.debug("Frame not yet decodable, skipping.")
                     continue
+                frame_pts = self.__rx_pts_fifo.popleft() if self.__rx_pts_fifo else wire_pts
             else:
                 frame_buffer = np.frombuffer(msg_data, dtype=msg_json["dtype"])
                 frame = frame_buffer.reshape(msg_json["shape"])
+                frame_pts = wire_pts
 
             if self.__multiserver_mode:
                 if msg_json["port"] not in self.__port_buffer:
@@ -781,6 +792,7 @@ class SyncTransport:
                 else:
                     self.__queue.append((None, frame))
             else:
+                self.__rx_pts_queue.append(frame_pts)
                 self.__queue.append(frame)
 
     def recv(self, return_data=None) -> Optional[NDArray]:
@@ -797,7 +809,10 @@ class SyncTransport:
         while not self.__terminate.is_set():
             try:
                 if len(self.__queue) > 0:
-                    return self.__queue.popleft()
+                    item = self.__queue.popleft()
+                    if self.__rx_pts_queue:
+                        self.__last_video_pts = self.__rx_pts_queue.popleft()
+                    return item
                 else:
                     time.sleep(0.00001)
                     continue
@@ -806,7 +821,7 @@ class SyncTransport:
                 break
         return None
 
-    def send(self, frame: NDArray, message: Any = None) -> Optional[Any]:
+    def send(self, frame: NDArray, message: Any = None, pts_ns: int = 0) -> Optional[Any]:
         if self.__receive_mode:
             self.__terminate.set()
             raise ValueError(
@@ -851,6 +866,17 @@ class SyncTransport:
         original_shape = frame.shape
         original_dtype = frame.dtype
 
+        plain_stream = self.__pattern == 0 and not (self.__bi_mode or self.__multiclient_mode)
+        if plain_stream and not self.__msg_socket.poll(0, zmq.POLLOUT):
+            self.__logging and logger.debug(
+                "Send pipe full; dropping frame to avoid stalling capture."
+            )
+            return None
+
+        self.__pts_fifo.append(int(pts_ns))
+        if len(self.__pts_fifo) > self.__pts_fifo_max:
+            self.__pts_fifo.popleft()
+
         encoded_data, metadata = self.__compression_handler.encode_frame(frame)
 
         if self.__compression_handler.is_enabled and not encoded_data:
@@ -859,13 +885,10 @@ class SyncTransport:
             )
             return None
 
+        wire_pts = self.__pts_fifo.popleft() if self.__pts_fifo else int(pts_ns)
+
         needs_ack = True
-        if self.__pattern == 0 and not (self.__bi_mode or self.__multiclient_mode):
-            if not self.__msg_socket.poll(0, zmq.POLLOUT):
-                self.__logging and logger.debug(
-                    "Send pipe full; dropping frame to avoid stalling capture."
-                )
-                return None
+        if plain_stream:
             self.__frames_since_ack += 1
             needs_ack = self.__frames_since_ack >= self.__ack_interval
 
@@ -879,6 +902,7 @@ class SyncTransport:
             port=self.__port if self.__multiserver_mode else None,
             multiserver_mode=self.__multiserver_mode,
             ack=needs_ack,
+            video_pts=wire_pts,
         )
 
         self.__msg_socket.send_json(msg_dict, self.__msg_flag | zmq.SNDMORE)
@@ -1002,6 +1026,10 @@ class SyncTransport:
                     return None
 
                 self.__logging and logger.debug(recv_confirmation)
+
+    @property
+    def last_video_pts(self) -> int:
+        return self.__last_video_pts
 
     def signal_stop(self) -> None:
         self.__terminate.set()

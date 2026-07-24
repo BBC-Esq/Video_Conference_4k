@@ -209,6 +209,7 @@ def create_frame_message(
     port: str = None,
     multiserver_mode: bool = False,
     ack: bool = True,
+    video_pts: int = 0,
 ) -> Dict[str, Any]:
     msg_dict = {}
 
@@ -223,6 +224,7 @@ def create_frame_message(
         "dtype": dtype,
         "shape": shape,
         "ack": ack,
+        "video_pts": video_pts,
     })
 
     return msg_dict
