@@ -117,6 +117,7 @@ class SyncTransport:
         self.__bytes_sent = 0
         self.__frames_sent = 0
         self.__reconnects = 0
+        self.__frames_pipe_dropped = 0
         overwrite_cert = False
         custom_cert_location = ""
 
@@ -876,6 +877,7 @@ class SyncTransport:
 
         plain_stream = self.__pattern == 0 and not (self.__bi_mode or self.__multiclient_mode)
         if plain_stream and not self.__msg_socket.poll(0, zmq.POLLOUT):
+            self.__frames_pipe_dropped += 1
             self.__logging and logger.debug(
                 "Send pipe full; dropping frame to avoid stalling capture."
             )
@@ -1054,6 +1056,10 @@ class SyncTransport:
     @property
     def reconnects(self) -> int:
         return self.__reconnects
+
+    @property
+    def frames_pipe_dropped(self) -> int:
+        return self.__frames_pipe_dropped
 
     @property
     def supports_dynamic_bitrate(self) -> bool:

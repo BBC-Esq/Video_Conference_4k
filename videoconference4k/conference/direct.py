@@ -32,6 +32,8 @@ class DirectConference:
         gpu_accelerated: bool = True,
         gpu_codec: str = "h264",
         gpu_bitrate: int = 8000000,
+        adaptive_bitrate: bool = True,
+        min_bitrate: int = 0,
         enable_audio: bool = True,
         audio_bitrate: int = 32000,
         audio_jitter_ms: float = 80.0,
@@ -114,6 +116,19 @@ class DirectConference:
         self.__stats_prev_bytes = 0
         self.__stats_prev_time = None
         self.__timer_raised = False
+
+        self.__adaptive_bitrate = adaptive_bitrate
+        self.__abr_max = gpu_bitrate
+        self.__abr_min = int(min_bitrate) if min_bitrate else max(300000, gpu_bitrate // 8)
+        self.__abr_target = gpu_bitrate
+        self.__abr_interval = 1.0
+        self.__abr_increase_interval = 4.0
+        self.__abr_drop_threshold = 0.05
+        self.__abr_last_check = None
+        self.__abr_last_increase = 0.0
+        self.__abr_prev_sent = 0
+        self.__abr_prev_dropped = 0
+        self.__abr_prev_bytes = 0
 
     @property
     def is_running(self) -> bool:
@@ -204,9 +219,60 @@ class DirectConference:
                     self.__frames_skipped += 1
                 if interval > 0 and (time.perf_counter() - proc_start) > interval:
                     self.__frames_lagged += 1
+            self.__maybe_adapt_bitrate(time.perf_counter())
             wait = interval - (time.perf_counter() - start)
             if wait > 0:
                 self.__terminate.wait(wait)
+
+    def _abr_decision(self, drop_frac: float, goodput_bps: float, now: float):
+        if drop_frac > self.__abr_drop_threshold:
+            target = max(self.__abr_min, min(self.__abr_target, int(goodput_bps * 0.9)))
+            if target < int(self.__abr_target * 0.95):
+                self.__abr_last_increase = now
+                return target
+        elif drop_frac <= 0.0 and (now - self.__abr_last_increase) >= self.__abr_increase_interval:
+            target = min(self.__abr_max, self.__abr_target + self.__abr_max // 10)
+            self.__abr_last_increase = now
+            if target > self.__abr_target:
+                return target
+        return None
+
+    def __maybe_adapt_bitrate(self, now: float) -> None:
+        if not (self.__adaptive_bitrate and self.__send_video is not None
+                and self.__send_video.supports_dynamic_bitrate):
+            return
+        if self.__abr_last_check is None:
+            self.__abr_last_check = now
+            self.__abr_last_increase = now
+            self.__abr_prev_sent = self.__send_video.frames_sent
+            self.__abr_prev_dropped = self.__send_video.frames_pipe_dropped
+            self.__abr_prev_bytes = self.__send_video.bytes_sent
+            return
+        elapsed = now - self.__abr_last_check
+        if elapsed < self.__abr_interval:
+            return
+
+        sent = self.__send_video.frames_sent
+        dropped = self.__send_video.frames_pipe_dropped
+        bytes_now = self.__send_video.bytes_sent
+        attempts = (sent - self.__abr_prev_sent) + (dropped - self.__abr_prev_dropped)
+        drop_frac = (dropped - self.__abr_prev_dropped) / attempts if attempts else 0.0
+        goodput_bps = (bytes_now - self.__abr_prev_bytes) * 8.0 / elapsed if elapsed > 0 else 0.0
+
+        self.__abr_last_check = now
+        self.__abr_prev_sent = sent
+        self.__abr_prev_dropped = dropped
+        self.__abr_prev_bytes = bytes_now
+
+        new_target = self._abr_decision(drop_frac, goodput_bps, now)
+        if new_target is not None and new_target != self.__abr_target:
+            if self.__send_video.reconfigure_bitrate(new_target):
+                self.__abr_target = new_target
+                self.__logging and logger.debug(
+                    "Adaptive bitrate -> {} kbps (drop {:.0%}, goodput {:.0f} kbps).".format(
+                        new_target // 1000, drop_frac, goodput_bps / 1000
+                    )
+                )
 
     def __video_recv_loop(self) -> None:
         while not self.__terminate.is_set():
@@ -272,6 +338,7 @@ class DirectConference:
 
         bytes_sent = self.__send_video.bytes_sent if self.__send_video is not None else 0
         frames_sent = self.__send_video.frames_sent if self.__send_video is not None else 0
+        pipe_dropped = self.__send_video.frames_pipe_dropped if self.__send_video is not None else 0
         reconnects = 0
         for transport in (self.__send_video, self.__recv_video):
             if transport is not None:
@@ -293,9 +360,12 @@ class DirectConference:
             "frames_skipped": self.__frames_skipped,
             "frames_dropped": self.__frames_dropped,
             "frames_lagged": self.__frames_lagged,
+            "pipe_dropped": pipe_dropped,
             "reconnects": reconnects,
             "bytes_sent": bytes_sent,
             "send_kbps": round(send_kbps, 1),
+            "target_bitrate": self.__abr_target,
+            "adaptive_bitrate": self.__adaptive_bitrate,
             "lipsync": self.__lipsync and self.__audio is not None,
         }
 
