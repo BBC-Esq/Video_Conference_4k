@@ -50,6 +50,7 @@ class AudioCapture:
 
         self.__input_queue = queue.Queue(maxsize=100)
         self.__output_queue = queue.Queue(maxsize=100)
+        self.__output_residual = None
         self.__subscribers = []
         self.__subscribers_lock = threading.Lock()
 
@@ -146,32 +147,42 @@ class AudioCapture:
     def __output_callback(self, outdata, frames, time_info, status):
         if status:
             self.__logging and logger.warning("Output status: {}".format(status))
-        try:
-            data = self.__output_queue.get_nowait()
+        out_channels = outdata.shape[1] if outdata.ndim > 1 else 1
+        needed = outdata.shape[0]
+        filled = 0
 
-            if data.ndim == 1:
-                data = data.reshape(-1, 1)
+        while filled < needed:
+            source = self.__output_residual
+            if source is None or source.shape[0] == 0:
+                try:
+                    source = self.__adapt_channels(self.__output_queue.get_nowait(), out_channels)
+                except queue.Empty:
+                    break
+                self.__output_residual = None
 
-            out_channels = outdata.shape[1] if outdata.ndim > 1 else 1
-            in_channels = data.shape[1] if data.ndim > 1 else 1
+            take = min(needed - filled, source.shape[0])
+            outdata[filled:filled + take] = source[:take]
+            filled += take
+            self.__output_residual = source[take:] if take < source.shape[0] else None
 
-            if in_channels != out_channels:
-                if in_channels == 1 and out_channels > 1:
-                    data = np.tile(data, (1, out_channels))
-                elif in_channels > 1 and out_channels == 1:
-                    data = data.mean(axis=1, keepdims=True).astype(data.dtype)
-                else:
-                    data = data[:, :out_channels] if in_channels > out_channels else np.pad(
-                        data, ((0, 0), (0, out_channels - in_channels)), mode='constant'
-                    )
+        if filled < needed:
+            outdata[filled:] = 0
 
-            samples_to_copy = min(data.shape[0], outdata.shape[0])
-            outdata[:samples_to_copy] = data[:samples_to_copy]
-            if samples_to_copy < outdata.shape[0]:
-                outdata[samples_to_copy:] = 0
+    def __adapt_channels(self, data: NDArray, out_channels: int) -> NDArray:
+        if data.ndim == 1:
+            data = data.reshape(-1, 1)
 
-        except queue.Empty:
-            outdata.fill(0)
+        in_channels = data.shape[1]
+        if in_channels == out_channels:
+            return data
+
+        if in_channels == 1 and out_channels > 1:
+            return np.tile(data, (1, out_channels))
+        if in_channels > 1 and out_channels == 1:
+            return data.mean(axis=1, keepdims=True).astype(data.dtype)
+        if in_channels > out_channels:
+            return data[:, :out_channels]
+        return np.pad(data, ((0, 0), (0, out_channels - in_channels)), mode="constant")
 
     def start(self) -> T:
         if self.__is_running:
