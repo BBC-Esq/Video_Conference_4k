@@ -98,52 +98,39 @@ def get_best_encoder(
             logger.warning("JPEG codec requested but not available")
 
     if preferred_type is None or preferred_type != CodecType.NONE:
-        if has_nvidia_codec():
-            logging and logger.info("Using NVIDIA hardware encoder")
-            return NvidiaEncoder(
-                width=width,
-                height=height,
-                framerate=framerate,
-                bitrate=bitrate,
-                codec=codec,
-                logging=logging,
-                **kwargs
-            )
+        sw_codec = "x264" if codec.lower() in ["h264", "x264"] else "x265"
+        ladder = [
+            ("NVIDIA hardware", has_nvidia_codec, lambda: NvidiaEncoder(
+                width=width, height=height, framerate=framerate, bitrate=bitrate,
+                codec=codec, logging=logging, **kwargs
+            )),
+            ("Intel QSV", has_intel_codec, lambda: IntelEncoder(
+                width=width, height=height, framerate=framerate, bitrate=bitrate,
+                codec=codec, logging=logging, **kwargs
+            )),
+            ("software", has_software_codec, lambda: SoftwareEncoder(
+                width=width, height=height, framerate=framerate, bitrate=bitrate,
+                codec=sw_codec, logging=logging, **kwargs
+            )),
+        ]
+        if fallback_to_jpeg:
+            ladder.append(("JPEG", has_jpeg_codec, lambda: JpegEncoder(
+                width=width, height=height, quality=quality, logging=logging, **kwargs
+            )))
 
-        if has_intel_codec():
-            logging and logger.info("Using Intel QSV encoder")
-            return IntelEncoder(
-                width=width,
-                height=height,
-                framerate=framerate,
-                bitrate=bitrate,
-                codec=codec,
-                logging=logging,
-                **kwargs
-            )
-
-        if has_software_codec():
-            logging and logger.info("Using software encoder")
-            sw_codec = "x264" if codec.lower() in ["h264", "x264"] else "x265"
-            return SoftwareEncoder(
-                width=width,
-                height=height,
-                framerate=framerate,
-                bitrate=bitrate,
-                codec=sw_codec,
-                logging=logging,
-                **kwargs
-            )
-
-        if fallback_to_jpeg and has_jpeg_codec():
-            logging and logger.info("Using JPEG encoder as fallback")
-            return JpegEncoder(
-                width=width,
-                height=height,
-                quality=quality,
-                logging=logging,
-                **kwargs
-            )
+        for name, available, build in ladder:
+            if not available():
+                continue
+            try:
+                encoder = build()
+            except Exception as e:
+                logger.error(
+                    "{} encoder is present but failed to initialise at {}x{} ({}); "
+                    "trying the next backend.".format(name, width, height, e)
+                )
+                continue
+            logging and logger.info("Using {} encoder".format(name))
+            return encoder
 
     logger.error("No suitable encoder available")
     return None
