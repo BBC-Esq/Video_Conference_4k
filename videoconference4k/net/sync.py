@@ -24,6 +24,8 @@ from .base import (
     build_connection_string,
     setup_authenticator,
     apply_socket_security,
+    apply_socket_qos,
+    DSCP_VIDEO,
     create_frame_message,
     create_return_message,
     VALID_SECURITY_MECHANISMS,
@@ -103,6 +105,7 @@ class SyncTransport:
         self.__bi_mode = False
 
         self.__secure_mode = 0
+        self.__dscp = DSCP_VIDEO
         overwrite_cert = False
         custom_cert_location = ""
 
@@ -179,6 +182,9 @@ class SyncTransport:
 
             elif key == "overwrite_cert" and isinstance(value, bool):
                 overwrite_cert = value
+
+            elif key == "dscp" and isinstance(value, int):
+                self.__dscp = value
 
             elif key == "ssh_tunnel_mode" and isinstance(value, str):
                 self.__ssh_tunnel_mode = value.strip()
@@ -364,6 +370,7 @@ class SyncTransport:
 
             try:
                 self.__msg_socket = self.__msg_context.socket(msg_pattern[1])
+                apply_socket_qos(self.__msg_socket, self.__dscp)
                 self.__pattern == 2 and self.__msg_socket.set_hwm(1)
 
                 apply_socket_security(
@@ -493,6 +500,7 @@ class SyncTransport:
 
             try:
                 self.__msg_socket = self.__msg_context.socket(msg_pattern[0])
+                apply_socket_qos(self.__msg_socket, self.__dscp)
 
                 if self.__pattern == 1:
                     self.__msg_socket.REQ_RELAXED = True
@@ -636,6 +644,7 @@ class SyncTransport:
 
                     try:
                         self.__msg_socket = self.__msg_context.socket(self.__msg_pattern)
+                        apply_socket_qos(self.__msg_socket, self.__dscp)
                         if isinstance(self.__connection_address, list):
                             for _connection in self.__connection_address:
                                 self.__msg_socket.bind(_connection)
@@ -873,6 +882,7 @@ class SyncTransport:
                         raise RuntimeError("[SyncTransport:ERROR] :: Client(s) seems to be offline, Abandoning.")
 
                     self.__msg_socket = self.__msg_context.socket(self.__msg_pattern)
+                    apply_socket_qos(self.__msg_socket, self.__dscp)
                     if isinstance(self.__connection_address, list):
                         for _connection in self.__connection_address:
                             self.__msg_socket.connect(_connection)
@@ -937,6 +947,7 @@ class SyncTransport:
                         raise RuntimeError("[SyncTransport:ERROR] :: Client seems to be offline, Abandoning!")
 
                     self.__msg_socket = self.__msg_context.socket(self.__msg_pattern)
+                    apply_socket_qos(self.__msg_socket, self.__dscp)
                     if self.__ssh_tunnel_mode:
                         ssh.tunnel_connection(
                             self.__msg_socket,

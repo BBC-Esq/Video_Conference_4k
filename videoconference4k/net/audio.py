@@ -5,7 +5,14 @@ from numpy.typing import NDArray
 
 from ..utils.common import get_logger, import_dependency_safe
 from ..codec import OpusEncoder, OpusDecoder
-from .base import validate_address, validate_protocol, validate_port, build_connection_string
+from .base import (
+    validate_address,
+    validate_protocol,
+    validate_port,
+    build_connection_string,
+    apply_socket_qos,
+    DSCP_AUDIO,
+)
 
 zmq = import_dependency_safe("zmq", pkg_name="pyzmq", error="silent", min_version="4.0")
 
@@ -26,6 +33,7 @@ class AudioTransport:
         fec: bool = True,
         packet_loss: int = 10,
         hwm: int = 50,
+        dscp: int = DSCP_AUDIO,
         logging: bool = False,
     ):
         import_dependency_safe("zmq" if zmq is None else "", pkg_name="pyzmq", min_version="4.0")
@@ -42,6 +50,7 @@ class AudioTransport:
 
         self.__context = zmq.Context.instance()
         self.__socket = self.__context.socket(zmq.PAIR)
+        apply_socket_qos(self.__socket, dscp)
         self.__socket.set_hwm(hwm)
 
         self.__encoder = None

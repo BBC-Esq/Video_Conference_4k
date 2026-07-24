@@ -41,6 +41,18 @@ VALID_SECURITY_MECHANISMS = {
 
 VALID_PROTOCOLS = ["tcp", "ipc"]
 
+DSCP_VIDEO = 34
+DSCP_AUDIO = 46
+
+
+def apply_socket_qos(socket: Any, dscp: int) -> None:
+    if not dscp or zmq is None:
+        return
+    try:
+        socket.setsockopt(zmq.TOS, int(dscp) << 2)
+    except Exception:
+        pass
+
 
 def validate_pattern(pattern: int, async_mode: bool = False) -> Tuple[int, Tuple]:
     valid_patterns = VALID_PATTERNS_ASYNC if async_mode else VALID_PATTERNS_SYNC
