@@ -125,6 +125,10 @@ class AudioTransport:
             return self.__queue.popleft()
         return None
 
+    def signal_stop(self) -> None:
+        if self.__terminate is not None:
+            self.__terminate.set()
+
     def close(self) -> None:
         if self.__terminate is not None:
             self.__terminate.set()

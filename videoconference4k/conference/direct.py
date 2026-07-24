@@ -94,6 +94,7 @@ class DirectConference:
         self.__terminate = threading.Event()
         self.__threads = []
         self.__is_running = False
+        self.__join_timeout = 6.0
 
     @property
     def is_running(self) -> bool:
@@ -211,16 +212,25 @@ class DirectConference:
     def stop(self) -> None:
         self.__terminate.set()
 
-        for transport in (self.__recv_video, self.__send_video, self.__recv_audio, self.__send_audio):
+        transports = (self.__recv_video, self.__send_video, self.__recv_audio, self.__send_audio)
+
+        for transport in transports:
+            if transport is not None:
+                try:
+                    transport.signal_stop()
+                except Exception:
+                    pass
+
+        for t in self.__threads:
+            t.join(timeout=self.__join_timeout)
+        self.__threads = []
+
+        for transport in transports:
             if transport is not None:
                 try:
                     transport.close()
                 except Exception:
                     pass
-
-        for t in self.__threads:
-            t.join(timeout=2)
-        self.__threads = []
 
         if self.__audio is not None:
             if self.__audio_sub is not None:

@@ -973,6 +973,9 @@ class SyncTransport:
 
                 self.__logging and logger.debug(recv_confirmation)
 
+    def signal_stop(self) -> None:
+        self.__terminate.set()
+
     def close(self, kill: bool = False) -> None:
         self.__logging and logger.debug(
             "Terminating various {} Processes.".format(
