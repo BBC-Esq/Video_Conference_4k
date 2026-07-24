@@ -105,7 +105,7 @@ class SoftwareEncoder(FFmpegPipeEncoder):
     def _build_ffmpeg_cmd(self) -> list:
         bitrate_k = self._bitrate // 1000
         framerate = self._framerate if self._framerate > 0 else 30
-        bufsize_k = max(1, bitrate_k // framerate)
+        bufsize_k = max(1, int(bitrate_k * 1.1 / framerate))
 
         cmd = [
             "ffmpeg",
@@ -177,7 +177,7 @@ class SoftwareEncoderSync(FFmpegSyncEncoder):
     def _build_ffmpeg_cmd(self) -> list:
         bitrate_k = self._bitrate // 1000
         framerate = self._framerate if self._framerate > 0 else 30
-        bufsize_k = max(1, bitrate_k // framerate)
+        bufsize_k = max(1, int(bitrate_k * 1.1 / framerate))
 
         cmd = [
             "ffmpeg",

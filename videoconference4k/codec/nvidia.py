@@ -155,8 +155,9 @@ class NvidiaEncoder(BaseEncoder):
             encoder_params["maxbitrate"] = max_bitrate
 
         if framerate > 0:
-            encoder_params["vbvbufsize"] = int(max_bitrate / framerate)
-            encoder_params["vbvinit"] = int(max_bitrate / framerate)
+            frame_bits = int(max_bitrate / framerate)
+            encoder_params["vbvbufsize"] = int(frame_bits * 1.1)
+            encoder_params["vbvinit"] = frame_bits
 
         if gpu_id > 0:
             encoder_params["gpu_id"] = gpu_id
@@ -211,7 +212,9 @@ class NvidiaEncoder(BaseEncoder):
         import cv2
 
         if bgr_frame.shape[1] != self._width or bgr_frame.shape[0] != self._height:
-            bgr_frame = cv2.resize(bgr_frame, (self._width, self._height))
+            downscaling = self._width < bgr_frame.shape[1] or self._height < bgr_frame.shape[0]
+            interp = cv2.INTER_AREA if downscaling else cv2.INTER_LINEAR
+            bgr_frame = cv2.resize(bgr_frame, (self._width, self._height), interpolation=interp)
 
         nv12_data = bgr_to_nv12_into(bgr_frame, self._i420_scratch, self._nv12_buffer)
 
