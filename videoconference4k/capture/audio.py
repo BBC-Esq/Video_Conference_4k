@@ -249,6 +249,19 @@ class AudioCapture:
             self.__output_queue.put_nowait(audio_data)
             return True
         except queue.Full:
+            pass
+
+        try:
+            self.__output_queue.get_nowait()
+        except queue.Empty:
+            pass
+        try:
+            self.__output_queue.put_nowait(audio_data)
+            self.__logging and logger.debug(
+                "Playback buffer full; discarded the oldest chunk to keep latency bounded."
+            )
+            return True
+        except queue.Full:
             return False
 
     def clear_output_queue(self) -> None:
