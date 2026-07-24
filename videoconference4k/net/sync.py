@@ -107,6 +107,8 @@ class SyncTransport:
         self.__secure_mode = 0
         self.__dscp = DSCP_VIDEO
         self.__queue_size = 8
+        self.__ack_interval = 30
+        self.__frames_since_ack = 0
         overwrite_cert = False
         custom_cert_location = ""
 
@@ -189,6 +191,12 @@ class SyncTransport:
 
             elif key == "queue_size" and isinstance(value, int) and value > 0:
                 self.__queue_size = value
+
+            elif key == "ack_interval" and isinstance(value, int):
+                if value >= 1:
+                    self.__ack_interval = value
+                else:
+                    logger.warning("Invalid `ack_interval` value skipped!")
 
             elif key == "ssh_tunnel_mode" and isinstance(value, str):
                 self.__ssh_tunnel_mode = value.strip()
@@ -736,7 +744,7 @@ class SyncTransport:
                             multiclient_mode=self.__multiclient_mode,
                         )
                         self.__msg_socket.send_json(return_dict, self.__msg_flag)
-                else:
+                elif msg_json.get("ack", True):
                     self.__msg_socket.send_string("Data received on device: {} !".format(self.__id))
             else:
                 with self.__return_data_lock:
@@ -812,6 +820,8 @@ class SyncTransport:
         exit_flag = frame is None or self.__terminate.is_set()
 
         if exit_flag:
+            if self.__pattern == 0 and not self.__msg_socket.poll(0, zmq.POLLOUT):
+                return None
             msg_dict = create_frame_message(
                 terminate_flag=True,
                 pattern=self.__pattern,
@@ -849,6 +859,16 @@ class SyncTransport:
             )
             return None
 
+        needs_ack = True
+        if self.__pattern == 0 and not (self.__bi_mode or self.__multiclient_mode):
+            if not self.__msg_socket.poll(0, zmq.POLLOUT):
+                self.__logging and logger.debug(
+                    "Send pipe full; dropping frame to avoid stalling capture."
+                )
+                return None
+            self.__frames_since_ack += 1
+            needs_ack = self.__frames_since_ack >= self.__ack_interval
+
         msg_dict = create_frame_message(
             terminate_flag=False,
             compression=metadata if self.__compression_handler.is_enabled else False,
@@ -858,6 +878,7 @@ class SyncTransport:
             shape="" if self.__compression_handler.is_enabled else original_shape,
             port=self.__port if self.__multiserver_mode else None,
             multiserver_mode=self.__multiserver_mode,
+            ack=needs_ack,
         )
 
         self.__msg_socket.send_json(msg_dict, self.__msg_flag | zmq.SNDMORE)
@@ -940,9 +961,18 @@ class SyncTransport:
 
                 return (recv_json["port"], recvd_data) if self.__multiclient_mode else recvd_data
             else:
+                if not needs_ack:
+                    return None
+
+                self.__frames_since_ack = 0
                 socks = dict(self.__poll.poll(self.__request_timeout))
                 if socks.get(self.__msg_socket) == zmq.POLLIN:
                     recv_confirmation = self.__msg_socket.recv()
+                    while self.__pattern == 0:
+                        try:
+                            self.__msg_socket.recv(flags=zmq.NOBLOCK)
+                        except zmq.Again:
+                            break
                 else:
                     logger.critical("No response from Client, Reconnecting again...")
                     self.__msg_socket.setsockopt(zmq.LINGER, 0)
@@ -1033,9 +1063,9 @@ class SyncTransport:
             try:
                 if self.__multiclient_mode:
                     for _ in self.__port_buffer:
-                        self.__msg_socket.send_json(term_dict)
+                        self.__msg_socket.send_json(term_dict, flags=zmq.NOBLOCK)
                 else:
-                    self.__msg_socket.send_json(term_dict)
+                    self.__msg_socket.send_json(term_dict, flags=zmq.NOBLOCK)
 
                 if self.__pattern < 2:
                     self.__logging and logger.debug("Terminating. Please wait...")

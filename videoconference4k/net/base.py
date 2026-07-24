@@ -208,6 +208,7 @@ def create_frame_message(
     shape: Any = "",
     port: str = None,
     multiserver_mode: bool = False,
+    ack: bool = True,
 ) -> Dict[str, Any]:
     msg_dict = {}
 
@@ -221,6 +222,7 @@ def create_frame_message(
         "pattern": str(pattern),
         "dtype": dtype,
         "shape": shape,
+        "ack": ack,
     })
 
     return msg_dict
