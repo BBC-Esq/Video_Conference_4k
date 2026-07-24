@@ -95,10 +95,15 @@ class DirectConference:
         self.__threads = []
         self.__is_running = False
         self.__join_timeout = 6.0
+        self.__frames_skipped = 0
 
     @property
     def is_running(self) -> bool:
         return self.__is_running
+
+    @property
+    def frames_skipped(self) -> int:
+        return self.__frames_skipped
 
     def start(self) -> "DirectConference":
         if self.__is_running:
@@ -157,16 +162,25 @@ class DirectConference:
 
     def __video_send_loop(self) -> None:
         interval = 1.0 / self.__framerate if self.__framerate > 0 else 0.0
+        read_timed = getattr(self.__video_source, "read_timed", None)
+        last_seq = -1
         while not self.__terminate.is_set():
             start = time.perf_counter()
-            frame = self.__video_source.read()
+            if read_timed is not None:
+                frame, _, seq = read_timed()
+            else:
+                frame, seq = self.__video_source.read(), None
             if frame is not None:
                 with self.__frame_lock:
                     self.__local_frame = frame
-                try:
-                    self.__send_video.send(frame)
-                except Exception as e:
-                    self.__logging and logger.debug("Video send error: {}".format(e))
+                if seq is None or seq != last_seq:
+                    last_seq = seq
+                    try:
+                        self.__send_video.send(frame)
+                    except Exception as e:
+                        self.__logging and logger.debug("Video send error: {}".format(e))
+                else:
+                    self.__frames_skipped += 1
             wait = interval - (time.perf_counter() - start)
             if wait > 0:
                 self.__terminate.wait(wait)

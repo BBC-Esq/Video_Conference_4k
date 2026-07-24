@@ -67,6 +67,9 @@ class VideoStream:
     def read(self) -> NDArray:
         return self.stream.read()
 
+    def read_timed(self):
+        return self.stream.read_timed()
+
     def stop(self) -> None:
         self.stream.stop()
         self.__logging and logger.debug("Terminating VideoStream.")

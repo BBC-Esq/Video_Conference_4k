@@ -224,6 +224,10 @@ class VideoCapture:
 
         self.__frame_lock = Lock()
 
+        self.__frame_seq = 0
+        self.__frame_pts_ns = time.perf_counter_ns()
+        self.__synth_seq = 0
+
         self.__is_running = False
 
     @property
@@ -343,6 +347,8 @@ class VideoCapture:
             else:
                 with self.__frame_lock:
                     self.frame = frame
+                    self.__frame_seq += 1
+                    self.__frame_pts_ns = time.perf_counter_ns()
 
             self.__stream_read.set()
 
@@ -384,6 +390,26 @@ class VideoCapture:
             with self.__frame_lock:
                 return self.frame
         return None
+
+    def read_timed(self):
+        if self.__capture_failed:
+            return None, 0, -1
+
+        if self.__threaded_queue_mode:
+            frame = self.read()
+            if frame is None:
+                return None, 0, -1
+            self.__synth_seq += 1
+            return frame, time.perf_counter_ns(), self.__synth_seq
+
+        if not self.__is_running:
+            with self.__frame_lock:
+                return self.frame, self.__frame_pts_ns, self.__frame_seq
+
+        if not self.__terminate.is_set() and self.__stream_read.wait(timeout=self.__thread_timeout):
+            with self.__frame_lock:
+                return self.frame, self.__frame_pts_ns, self.__frame_seq
+        return None, 0, -1
 
     def stop(self) -> None:
         self.__logging and logger.debug("Terminating processes.")
