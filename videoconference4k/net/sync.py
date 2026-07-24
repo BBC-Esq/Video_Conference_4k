@@ -644,6 +644,10 @@ class SyncTransport:
                         # Spurious poll wakeup (e.g. CURVE/ZAP handshake
                         # traffic) — nothing was actually readable yet.
                         continue
+                    except zmq.ZMQError:
+                        self.__terminate.set()
+                        self.__queue.append(None)
+                        break
                 else:
                     logger.critical("No response from Server(s), Reconnecting again...")
                     self.__msg_socket.close(linger=0)
