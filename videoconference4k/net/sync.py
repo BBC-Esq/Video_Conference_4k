@@ -106,6 +106,7 @@ class SyncTransport:
 
         self.__secure_mode = 0
         self.__dscp = DSCP_VIDEO
+        self.__queue_size = 8
         overwrite_cert = False
         custom_cert_location = ""
 
@@ -185,6 +186,9 @@ class SyncTransport:
 
             elif key == "dscp" and isinstance(value, int):
                 self.__dscp = value
+
+            elif key == "queue_size" and isinstance(value, int) and value > 0:
+                self.__queue_size = value
 
             elif key == "ssh_tunnel_mode" and isinstance(value, str):
                 self.__ssh_tunnel_mode = value.strip()
@@ -371,7 +375,7 @@ class SyncTransport:
             try:
                 self.__msg_socket = self.__msg_context.socket(msg_pattern[1])
                 apply_socket_qos(self.__msg_socket, self.__dscp)
-                self.__pattern == 2 and self.__msg_socket.set_hwm(1)
+                self.__msg_socket.set_hwm(1 if self.__pattern == 2 else self.__queue_size)
 
                 apply_socket_security(
                     self.__msg_socket,
@@ -442,7 +446,7 @@ class SyncTransport:
                 "Threaded Queue Mode is enabled by default for this connection."
             )
 
-            self.__queue = deque(maxlen=96)
+            self.__queue = deque(maxlen=self.__queue_size)
 
             self.__thread = Thread(target=self.__recv_handler, name="SyncTransport", args=())
             self.__thread.daemon = True
@@ -506,8 +510,7 @@ class SyncTransport:
                     self.__msg_socket.REQ_RELAXED = True
                     self.__msg_socket.REQ_CORRELATE = True
 
-                if self.__pattern == 2:
-                    self.__msg_socket.set_hwm(1)
+                self.__msg_socket.set_hwm(1 if self.__pattern == 2 else self.__queue_size)
 
                 apply_socket_security(
                     self.__msg_socket,
@@ -610,7 +613,7 @@ class SyncTransport:
         msg_json = None
 
         while not self.__terminate.is_set():
-            if len(self.__queue) >= 96:
+            if len(self.__queue) >= self.__queue_size:
                 time.sleep(0.000001)
                 continue
 

@@ -32,7 +32,7 @@ class AudioTransport:
         bitrate: int = 32000,
         fec: bool = True,
         packet_loss: int = 10,
-        hwm: int = 50,
+        hwm: int = 10,
         dscp: int = DSCP_AUDIO,
         logging: bool = False,
     ):
