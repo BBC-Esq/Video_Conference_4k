@@ -168,6 +168,10 @@ class AudioCapture:
         if filled < needed:
             outdata[filled:] = 0
 
+        if np.issubdtype(outdata.dtype, np.floating):
+            np.nan_to_num(outdata, copy=False, nan=0.0, posinf=1.0, neginf=-1.0)
+            np.clip(outdata, -1.0, 1.0, out=outdata)
+
     def __adapt_channels(self, data: NDArray, out_channels: int) -> NDArray:
         if data.ndim == 1:
             data = data.reshape(-1, 1)
