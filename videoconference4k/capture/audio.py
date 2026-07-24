@@ -1,6 +1,7 @@
 import numpy as np
 import threading
 import queue
+import time
 from typing import TypeVar, Optional, Callable, Union
 from numpy.typing import NDArray
 
@@ -123,19 +124,21 @@ class AudioCapture:
             self.__logging and logger.warning("Input status: {}".format(status))
         if not self.__terminate.is_set():
             audio_data = indata.copy()
+            pts_ns = time.perf_counter_ns() - int(frames / self.__sample_rate * 1e9)
             try:
                 self.__input_queue.put_nowait(audio_data)
             except queue.Full:
                 pass
+            payload = (audio_data, pts_ns)
             with self.__subscribers_lock:
                 subscribers = list(self.__subscribers)
             for subscriber in subscribers:
                 try:
-                    subscriber.put_nowait(audio_data)
+                    subscriber.put_nowait(payload)
                 except queue.Full:
                     try:
                         subscriber.get_nowait()
-                        subscriber.put_nowait(audio_data)
+                        subscriber.put_nowait(payload)
                     except (queue.Empty, queue.Full):
                         pass
             if self.__on_audio_callback is not None:

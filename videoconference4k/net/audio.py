@@ -1,6 +1,7 @@
+import struct
 from collections import deque
 from threading import Thread, Event
-from typing import Optional
+from typing import Optional, Tuple
 from numpy.typing import NDArray
 
 from ..utils.common import get_logger, import_dependency_safe
@@ -91,7 +92,7 @@ class AudioTransport:
     def channels(self) -> int:
         return self.__channels
 
-    def send(self, pcm: NDArray) -> None:
+    def send(self, pcm: NDArray, pts_ns: int = 0) -> None:
         if self.__receive_mode or self.__encoder is None:
             raise ValueError("[AudioTransport:ERROR] :: send() is only available in send mode.")
         if self.__socket is None:
@@ -100,7 +101,7 @@ class AudioTransport:
         if not data:
             return
         try:
-            self.__socket.send(data, flags=zmq.NOBLOCK)
+            self.__socket.send(struct.pack(">q", int(pts_ns)) + data, flags=zmq.NOBLOCK)
         except zmq.Again:
             self.__logging and logger.debug("Audio send buffer full, dropping chunk.")
 
@@ -114,11 +115,15 @@ class AudioTransport:
                 continue
             except zmq.ZMQError:
                 break
-            pcm = self.__decoder.decode(bytes(data))
+            raw = bytes(data)
+            if len(raw) < 8:
+                continue
+            pts_ns = struct.unpack(">q", raw[:8])[0]
+            pcm = self.__decoder.decode(raw[8:])
             if pcm is not None:
-                self.__queue.append(pcm)
+                self.__queue.append((pcm, pts_ns))
 
-    def recv(self) -> Optional[NDArray]:
+    def recv(self) -> Optional[Tuple[NDArray, int]]:
         if not self.__receive_mode:
             raise ValueError("[AudioTransport:ERROR] :: recv() is only available in receive mode.")
         if self.__queue:

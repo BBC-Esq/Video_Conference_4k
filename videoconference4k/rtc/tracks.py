@@ -131,7 +131,8 @@ if aiortc is not None:
             audio_data = None
             if self.__subscription is not None:
                 try:
-                    audio_data = self.__subscription.get(timeout=0.001)
+                    item = self.__subscription.get(timeout=0.001)
+                    audio_data = item[0] if isinstance(item, tuple) else item
                 except queue.Empty:
                     audio_data = None
             elif self.__audio_source is not None:

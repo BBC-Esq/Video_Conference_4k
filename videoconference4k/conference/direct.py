@@ -199,18 +199,19 @@ class DirectConference:
     def __audio_send_loop(self) -> None:
         while not self.__terminate.is_set():
             try:
-                chunk = self.__audio_sub.get(timeout=0.1)
+                chunk, pts_ns = self.__audio_sub.get(timeout=0.1)
             except queue.Empty:
                 continue
             try:
-                self.__send_audio.send(chunk)
+                self.__send_audio.send(chunk, pts_ns)
             except Exception as e:
                 self.__logging and logger.debug("Audio send error: {}".format(e))
 
     def __audio_recv_loop(self) -> None:
         while not self.__terminate.is_set():
-            chunk = self.__recv_audio.recv()
-            if chunk is not None:
+            received = self.__recv_audio.recv()
+            if received is not None:
+                chunk, _ = received
                 self.__audio.write(chunk)
             else:
                 self.__terminate.wait(0.005)
