@@ -30,6 +30,15 @@ DEFAULT_CAMERA_PRESETS = [
 ]
 
 
+def _percentile(sorted_vals: list, pct: float) -> float:
+    if not sorted_vals:
+        return 0.0
+    k = (len(sorted_vals) - 1) * pct / 100.0
+    lo = int(k)
+    hi = min(lo + 1, len(sorted_vals) - 1)
+    return sorted_vals[lo] + (sorted_vals[hi] - sorted_vals[lo]) * (k - lo)
+
+
 def probe_camera(
     source: int = 0,
     presets: Optional[list] = None,
@@ -45,9 +54,13 @@ def probe_camera(
     for (req_w, req_h, req_fps) in presets:
         entry = {
             "requested": (req_w, req_h, req_fps),
+            "requested_fps": req_fps,
             "opened": False,
             "delivered": None,
+            "negotiated_fps": 0.0,
             "measured_fps": 0.0,
+            "worst_interval_ms": 0.0,
+            "p99_interval_ms": 0.0,
             "fourcc": "",
         }
 
@@ -74,29 +87,39 @@ def probe_camera(
             for _ in range(warmup):
                 cap.read()
 
+            intervals = []
             frames = 0
-            start = time.perf_counter()
+            last = time.perf_counter()
             while frames < sample:
                 grabbed, _ = cap.read()
                 if not grabbed:
                     break
+                now = time.perf_counter()
+                intervals.append(now - last)
+                last = now
                 frames += 1
-            elapsed = time.perf_counter() - start
 
+            intervals.sort()
+            median = _percentile(intervals, 50)
             entry["delivered"] = (
                 int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)),
                 int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT)),
             )
-            entry["measured_fps"] = (frames / elapsed) if elapsed > 0 else 0.0
+            entry["negotiated_fps"] = round(cap.get(cv2.CAP_PROP_FPS), 2)
+            entry["measured_fps"] = round(1.0 / median, 2) if median > 0 else 0.0
+            entry["worst_interval_ms"] = round(max(intervals) * 1000.0, 2) if intervals else 0.0
+            entry["p99_interval_ms"] = round(_percentile(intervals, 99) * 1000.0, 2)
             cc = int(cap.get(cv2.CAP_PROP_FOURCC))
             entry["fourcc"] = (
                 "".join(chr((cc >> (8 * i)) & 0xFF) for i in range(4)).strip()
                 if cc else ""
             )
             logging and logger.info(
-                "Probe {}x{}@{} -> delivered {} @ {:.1f} fps (FOURCC {}).".format(
-                    req_w, req_h, req_fps, entry["delivered"],
-                    entry["measured_fps"], entry["fourcc"] or "N/A"
+                "Probe {}x{}@{} -> delivered {} negotiated {} measured {} fps, "
+                "worst {}ms p99 {}ms (FOURCC {}).".format(
+                    req_w, req_h, req_fps, entry["delivered"], entry["negotiated_fps"],
+                    entry["measured_fps"], entry["worst_interval_ms"], entry["p99_interval_ms"],
+                    entry["fourcc"] or "N/A"
                 )
             )
         finally:
