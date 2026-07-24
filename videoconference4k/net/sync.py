@@ -840,6 +840,12 @@ class SyncTransport:
 
         encoded_data, metadata = self.__compression_handler.encode_frame(frame)
 
+        if self.__compression_handler.is_enabled and not encoded_data:
+            self.__logging and logger.debug(
+                "Encoder produced no output for this frame (priming or buffering); nothing sent."
+            )
+            return None
+
         msg_dict = create_frame_message(
             terminate_flag=False,
             compression=metadata if self.__compression_handler.is_enabled else False,
