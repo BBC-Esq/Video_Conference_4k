@@ -65,6 +65,17 @@ def bgr_to_nv12(bgr_frame: NDArray) -> NDArray:
     return nv12.reshape(-1)
 
 
+def _decoded_frame_to_ndarray(frame) -> Optional[NDArray]:
+    try:
+        return np.from_dlpack(frame)
+    except Exception:
+        pass
+    try:
+        return np.array(frame, copy=False)
+    except Exception:
+        return None
+
+
 def nv12_to_bgr(nv12_data: NDArray, width: int, height: int) -> NDArray:
     import cv2
     nv12_image = nv12_data.reshape((height * 3 // 2, width))
@@ -286,32 +297,37 @@ class NvidiaDecoder(BaseDecoder):
             return None
 
         try:
-            decoded_frames = self._decoder.Decode(encoded_data)
+            buffer = np.frombuffer(encoded_data, dtype=np.uint8)
+            packet = nvc.PacketData()
+            packet.bsl_data = buffer.ctypes.data
+            packet.bsl = buffer.size
+
+            decoded_frames = self._decoder.Decode(packet)
 
             if not decoded_frames or len(decoded_frames) == 0:
                 return None
 
-            frame = decoded_frames[-1]
+            nv12 = _decoded_frame_to_ndarray(decoded_frames[-1])
+            if nv12 is None:
+                return None
 
-            if hasattr(frame, 'shape'):
-                if len(frame.shape) == 1:
-                    if self._width is None or self._height is None:
-                        raise RuntimeError(
-                            "Received 1D NV12 buffer but no dimensions available. "
-                            "Ensure width and height are provided."
-                        )
-                    return nv12_to_bgr(np.array(frame), self._width, self._height)
-                elif len(frame.shape) == 2:
-                    h, w = frame.shape
-                    actual_height = int(h * 2 / 3)
-                    self._width = w
-                    self._height = actual_height
-                    return nv12_to_bgr(np.array(frame).flatten(), w, actual_height)
-                elif len(frame.shape) == 3:
-                    self._height, self._width = frame.shape[:2]
-                    return np.array(frame)
+            if nv12.ndim == 2:
+                h, w = nv12.shape
+                actual_height = int(h * 2 / 3)
+                self._width = w
+                self._height = actual_height
+                return nv12_to_bgr(nv12.reshape(-1), w, actual_height)
 
-            return np.array(frame)
+            if nv12.ndim == 1:
+                if self._width is None or self._height is None:
+                    return None
+                return nv12_to_bgr(nv12, self._width, self._height)
+
+            if nv12.ndim == 3:
+                self._height, self._width = nv12.shape[:2]
+                return np.array(nv12, copy=True)
+
+            return None
 
         except Exception as e:
             self._logging and logger.error("Decode error: {}".format(e))
