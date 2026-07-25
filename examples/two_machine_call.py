@@ -39,6 +39,61 @@ def lan_address():
         probe.close()
 
 
+def nvenc_diagnosis():
+    """Explain why hardware encoding is unavailable instead of only reporting that it is."""
+    import os
+    from pathlib import Path
+
+    lines = []
+    venv = Path(sys.executable).parent.parent
+    nvidia_dir = venv / "Lib" / "site-packages" / "nvidia"
+    needed = ("cuda_runtime", "cublas", "cuda_nvrtc")
+    missing = [n for n in needed if not (nvidia_dir / n / "bin").exists()]
+
+    install = ('pip install PyNvVideoCodec nvidia-cuda-runtime-cu12 '
+               'nvidia-cublas-cu12 nvidia-cuda-nvrtc-cu12')
+
+    try:
+        import PyNvVideoCodec as nvc
+    except Exception as exc:
+        lines.append("PyNvVideoCodec is not importable in this environment:")
+        lines.append("  {}".format(exc))
+        lines.append("Install the hardware packages INTO THIS venv, then re-run preflight:")
+        lines.append("  " + install)
+        return lines
+
+    if missing:
+        lines.append("PyNvVideoCodec is installed, but these CUDA runtime packages are missing: "
+                     + ", ".join(missing))
+        lines.append("  " + install)
+
+    try:
+        encoder = nvc.CreateEncoder(256, 256, "NV12", True, codec="h264")
+        del encoder
+        lines.append("PyNvVideoCodec is installed and the driver created a test encoder.")
+    except Exception as exc:
+        lines.append("PyNvVideoCodec is installed but the driver refused to create an encoder:")
+        lines.append("  {}".format(exc))
+        if not missing:
+            lines.append("This is usually an out-of-date GPU driver. Check the driver version")
+            lines.append("reported above and update it from NVIDIA, then re-run preflight.")
+    return lines
+
+
+def gpu_hardware():
+    import subprocess
+    try:
+        out = subprocess.run(
+            ["nvidia-smi", "--query-gpu=name,driver_version", "--format=csv,noheader"],
+            capture_output=True, text=True, timeout=15)
+        text = (out.stdout or "").strip()
+        return text if text else "nvidia-smi returned nothing (no NVIDIA driver?)"
+    except FileNotFoundError:
+        return "nvidia-smi not found - no NVIDIA driver installed, or not on PATH"
+    except Exception as exc:
+        return "nvidia-smi failed: {}".format(exc)
+
+
 def preflight(args):
     from videoconference4k.capture import probe_camera, AudioCapture
     from videoconference4k.codec import get_available_codecs
@@ -49,13 +104,19 @@ def preflight(args):
 
     print("\nGive the other machine this address: {}".format(lan_address()))
 
+    print("\nGPU  {}".format(gpu_hardware()))
+
     codecs = get_available_codecs()
     print("\nCodecs")
     for name, ok in codecs.items():
         print("  {:<16} {}".format(name, "yes" if ok else "no"))
+
     if not codecs.get("nvidia"):
-        print("  NOTE: no NVENC here. Both machines must agree on --preset;")
-        print("        a machine without NVENC cannot decode a hardware H264 stream.")
+        print("\nWhy hardware encoding is unavailable")
+        for line in nvenc_diagnosis():
+            print("  " + line)
+        print("  Until this is fixed, use --preset safe; a machine without NVENC")
+        print("  cannot decode the other machine's hardware H264 stream.")
 
     print("\nAudio devices")
     try:

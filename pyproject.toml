@@ -64,6 +64,9 @@ dependencies = [
 [project.optional-dependencies]
 gpu = [
     "PyNvVideoCodec>=2.0",
+    "nvidia-cuda-runtime-cu12",
+    "nvidia-cublas-cu12",
+    "nvidia-cuda-nvrtc-cu12",
 ]
 signaling = [
     "websockets>=12.0",
