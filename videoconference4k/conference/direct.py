@@ -104,7 +104,10 @@ class DirectConference:
         self.__audio_sync_offset_ns = int(audio_sync_offset_ms * 1e6)
         self.__lipsync_deadband_ns = int(lipsync_deadband_ms * 1e6)
         self.__video_hold = deque()
-        self.__video_hold_cap = 300
+        self.__video_hold_cap = max(2, int(framerate)) if framerate > 0 else 30
+        self.__playout_stall_s = 0.25
+        self.__playout_last_value = None
+        self.__playout_last_advance = 0.0
 
         self.__terminate = threading.Event()
         self.__threads = []
@@ -309,9 +312,10 @@ class DirectConference:
                 self.__send_video.force_next_keyframe()
             pts_ns = self.__recv_video.last_video_pts
             with self.__frame_lock:
-                self.__remote_frame = frame
-                if len(self.__video_hold) < self.__video_hold_cap:
-                    self.__video_hold.append((pts_ns, frame))
+                if len(self.__video_hold) >= self.__video_hold_cap:
+                    self.__video_hold.popleft()
+                    self.__frames_dropped += 1
+                self.__video_hold.append((pts_ns, frame))
 
     def __audio_send_loop(self) -> None:
         while not self.__terminate.is_set():
@@ -337,6 +341,13 @@ class DirectConference:
         target = None
         if self.__lipsync and self.__audio is not None:
             playout = self.__audio.playout_pts_ns()
+            if playout is not None:
+                now = time.perf_counter()
+                if playout != self.__playout_last_value:
+                    self.__playout_last_value = playout
+                    self.__playout_last_advance = now
+                elif now - self.__playout_last_advance > self.__playout_stall_s:
+                    playout = None
             if playout is not None:
                 target = playout - self.__audio_sync_offset_ns
 
