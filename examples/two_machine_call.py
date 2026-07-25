@@ -140,6 +140,109 @@ def _run_ffmpeg(arguments, timeout=25):
         return ""
 
 
+FFMPEG_ENCODERS = [
+    ("h264_qsv", "Intel Quick Sync H.264"),
+    ("hevc_qsv", "Intel Quick Sync HEVC"),
+    ("av1_qsv", "Intel Quick Sync AV1"),
+    ("libx264", "Software x264 (CPU)"),
+    ("libx265", "Software x265 (CPU)"),
+]
+
+
+def ffmpeg_encoder_works(name):
+    """Actually encode a few frames. Being listed by ffmpeg is not the same as working."""
+    import subprocess
+    try:
+        done = subprocess.run(
+            ["ffmpeg", "-hide_banner", "-loglevel", "error",
+             "-f", "lavfi", "-i", "testsrc=size=640x480:rate=30",
+             "-frames:v", "5", "-c:v", name, "-f", "null", "-"],
+            capture_output=True, text=True, timeout=60)
+        if done.returncode == 0:
+            return True, ""
+        detail = " ".join((done.stderr or "").split())
+        return False, detail[:88]
+    except FileNotFoundError:
+        return False, "ffmpeg not installed"
+    except Exception as exc:
+        return False, str(exc)[:88]
+
+
+def graphics_adapters():
+    """Every display adapter, so an Intel iGPU is visible even if ffmpeg knows nothing about it."""
+    import json
+    import subprocess
+    if not sys.platform.startswith("win"):
+        return []
+    try:
+        done = subprocess.run(
+            ["powershell", "-NoProfile", "-Command",
+             "Get-CimInstance Win32_VideoController | "
+             "Select-Object Name,DriverVersion | ConvertTo-Json -Compress"],
+            capture_output=True, text=True, timeout=40)
+        data = json.loads((done.stdout or "").strip() or "[]")
+        if isinstance(data, dict):
+            data = [data]
+        return [(str(d.get("Name", "")), str(d.get("DriverVersion", ""))) for d in data]
+    except Exception:
+        return []
+
+
+def qsv_runtime_dll():
+    """The Intel driver installs these; their presence means the hardware side of QSV is ready."""
+    import os
+    system32 = os.path.join(os.environ.get("SystemRoot", r"C:\Windows"), "System32")
+    for dll in ("libmfxhw64.dll", "libvpl.dll", "libmfx64.dll"):
+        if os.path.exists(os.path.join(system32, dll)):
+            return dll
+    return None
+
+
+def report_graphics():
+    adapters = graphics_adapters()
+    intel = [name for name, _ in adapters if "intel" in name.lower()]
+    if adapters:
+        print("\nGraphics hardware")
+        for name, driver in adapters:
+            print("  {:<38} driver {}".format(name[:38], driver))
+    runtime = qsv_runtime_dll() if intel else None
+    if intel:
+        print("  Quick Sync runtime: {}".format(
+            "{} present".format(runtime) if runtime
+            else "NOT found - update the Intel graphics driver"))
+    return bool(intel), runtime
+
+
+def report_ffmpeg_encoders(has_intel_gpu, qsv_runtime):
+    from videoconference4k.codec.base import get_ffmpeg_encoders
+    listed = get_ffmpeg_encoders()
+    if not listed:
+        print("\nffmpeg not found - only the NVIDIA and JPEG paths are available")
+        if has_intel_gpu:
+            print("  This machine HAS an Intel GPU, so installing ffmpeg would unlock Quick Sync.")
+        return
+
+    print("\nEncoders on this machine (tested by encoding, not just listed)")
+    missing_qsv = []
+    for name, label in FFMPEG_ENCODERS:
+        if name not in listed:
+            print("  {:<24} not built into this ffmpeg".format(label))
+            if name.endswith("_qsv"):
+                missing_qsv.append(label)
+            continue
+        ok, detail = ffmpeg_encoder_works(name)
+        print("  {:<24} {}".format(label, "works" if ok
+                                   else "listed but FAILS here: {}".format(detail)))
+
+    if missing_qsv and has_intel_gpu:
+        print("\n  This machine has an Intel GPU{}, but this ffmpeg build has no"
+              .format(" with the Quick Sync runtime installed" if qsv_runtime else ""))
+        print("  Quick Sync support compiled in. A full ffmpeg build (for example the")
+        print("  gyan.dev or BtbN Windows builds) would enable it - the hardware is fine.")
+    elif missing_qsv:
+        print("\n  No Intel GPU detected, so Quick Sync is not applicable on this machine.")
+
+
 def dshow_video_devices():
     text = _run_ffmpeg(["-list_devices", "true", "-f", "dshow", "-i", "dummy"])
     return re.findall(r'"([^"]+)"\s*\(video\)', text)
@@ -208,12 +311,28 @@ def preflight(args):
     for name, ok in codecs.items():
         print("  {:<16} {}".format(name, "yes" if ok else "no"))
 
+    print("  {:<16} {}".format("(intel_qsv above is only what ffmpeg lists;", "see the tested list below)"))
+
     if not codecs.get("nvidia"):
         print("\nWhy hardware encoding is unavailable")
         for line in nvenc_diagnosis():
             print("  " + line)
         print("  Until this is fixed, use --preset safe; a machine without NVENC")
         print("  cannot decode the other machine's hardware H264 stream.")
+
+    try:
+        has_intel_gpu, qsv_runtime = report_graphics()
+    except Exception as exc:
+        has_intel_gpu, qsv_runtime = False, None
+        print("\nGraphics adapter probe failed: {}".format(exc))
+
+    try:
+        report_ffmpeg_encoders(has_intel_gpu, qsv_runtime)
+    except Exception as exc:
+        print("\nEncoder test failed: {}".format(exc))
+
+    print("\n  A call currently picks: NVENC if present, else software x264, else JPEG.")
+    print("  Quick Sync is NOT yet used by a call even when it works here.")
 
     print("\nAudio devices   (choose with --mic N and --speaker N)")
     try:
