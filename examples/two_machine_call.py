@@ -9,6 +9,7 @@ pointed at the other's LAN address.
 """
 
 import argparse
+import re
 import socket
 import sys
 import time
@@ -17,15 +18,26 @@ import numpy as np
 
 PRESETS = {
     "safe": dict(resolution=(1280, 720), framerate=30, gpu_accelerated=False,
-                 gpu_bitrate=8_000_000,
+                 gpu_bitrate=4_000_000,
                  note="720p30 JPEG - works between any two machines, proves the link"),
-    "hd60": dict(resolution=(1920, 1080), framerate=60, gpu_accelerated=True,
-                 gpu_bitrate=12_000_000,
-                 note="1080p60 hardware H264 - needs a capable camera on both ends"),
-    "uhd30": dict(resolution=(3840, 2160), framerate=30, gpu_accelerated=True,
-                  gpu_bitrate=25_000_000,
-                  note="4K30 hardware H264 - the headline path"),
+    "720p30": dict(resolution=(1280, 720), framerate=30, gpu_accelerated=True,
+                   gpu_bitrate=4_000_000,
+                   note="720p30 hardware H264"),
+    "720p60": dict(resolution=(1280, 720), framerate=60, gpu_accelerated=True,
+                   gpu_bitrate=6_000_000,
+                   note="720p60 hardware H264 - smoothest motion at modest bandwidth"),
+    "1080p30": dict(resolution=(1920, 1080), framerate=30, gpu_accelerated=True,
+                    gpu_bitrate=8_000_000,
+                    note="1080p30 hardware H264"),
+    "1080p60": dict(resolution=(1920, 1080), framerate=60, gpu_accelerated=True,
+                    gpu_bitrate=12_000_000,
+                    note="1080p60 hardware H264"),
+    "4k30": dict(resolution=(3840, 2160), framerate=30, gpu_accelerated=True,
+                 gpu_bitrate=25_000_000,
+                 note="4K30 hardware H264 - the headline path"),
 }
+
+PRESET_ALIASES = {"hd60": "1080p60", "uhd30": "4k30"}
 
 
 def lan_address():
@@ -113,6 +125,68 @@ def driver_floor_warning(gpu_line):
     return None
 
 
+MODE_PATTERN = re.compile(
+    r"(?:vcodec|pixel_format)=(\S+)\s+min s=\d+x\d+ fps=[\d.]+\s+"
+    r"max s=(\d+)x(\d+) fps=([\d.]+)")
+
+
+def _run_ffmpeg(arguments, timeout=25):
+    import subprocess
+    try:
+        done = subprocess.run(["ffmpeg", "-hide_banner"] + arguments,
+                              capture_output=True, text=True, timeout=timeout)
+        return (done.stderr or "") + (done.stdout or "")
+    except Exception:
+        return ""
+
+
+def dshow_video_devices():
+    text = _run_ffmpeg(["-list_devices", "true", "-f", "dshow", "-i", "dummy"])
+    return re.findall(r'"([^"]+)"\s*\(video\)', text)
+
+
+def camera_modes(device_name):
+    """Every capture mode the camera itself advertises, newest DirectShow data."""
+    text = _run_ffmpeg(["-list_options", "true", "-f", "dshow",
+                        "-i", "video={}".format(device_name)])
+    modes = {}
+    for fmt, width, height, fps in MODE_PATTERN.findall(text):
+        key = (int(width), int(height))
+        modes.setdefault(key, {})
+        best = modes[key].get(fmt, 0.0)
+        modes[key][fmt] = max(best, float(fps))
+    return modes
+
+
+def report_camera_modes(args):
+    devices = dshow_video_devices()
+    if not devices:
+        return None
+    name = devices[args.camera] if args.camera < len(devices) else devices[0]
+    print("\nCamera modes advertised by \"{}\"".format(name))
+    modes = camera_modes(name)
+    if not modes:
+        print("  could not read the mode list")
+        return None
+
+    for (width, height) in sorted(modes, key=lambda wh: (-wh[0] * wh[1])):
+        formats = modes[(width, height)]
+        rendered = "   ".join(
+            "{} up to {:g} fps".format(fmt, fps)
+            for fmt, fps in sorted(formats.items(), key=lambda kv: -kv[1]))
+        print("  {:>9}   {}".format("{}x{}".format(width, height), rendered))
+
+    print("\n  Presets this camera can deliver")
+    for preset_name, cfg in PRESETS.items():
+        width, height = cfg["resolution"]
+        wanted = cfg["framerate"]
+        best = max(modes.get((width, height), {}).values(), default=0.0)
+        verdict = "yes" if best + 0.5 >= wanted else "NO  (camera tops out at {:g} fps)".format(best)
+        print("    --preset {:<8} {}x{}@{:<3} {}".format(
+            preset_name, width, height, wanted, verdict))
+    return modes
+
+
 def preflight(args):
     from videoconference4k.capture import probe_camera, AudioCapture
     from videoconference4k.codec import get_available_codecs
@@ -173,8 +247,17 @@ def preflight(args):
     except Exception as exc:
         print("  audio probe failed: {}".format(exc))
 
-    print("\nCamera (measured, not advertised)")
-    presets = [(1280, 720, 30), (1920, 1080, 60), (3840, 2160, 30)]
+    try:
+        report_camera_modes(args)
+    except Exception as exc:
+        print("\nCamera mode list unavailable: {}".format(exc))
+
+    print("\nCamera (measured by actually capturing, not advertised)")
+    presets = []
+    for cfg in PRESETS.values():
+        entry = (cfg["resolution"][0], cfg["resolution"][1], cfg["framerate"])
+        if entry not in presets:
+            presets.append(entry)
     try:
         for entry in probe_camera(source=args.camera, presets=presets, sample=20):
             req_w, req_h, req_fps = entry["requested"]
@@ -195,7 +278,9 @@ def preflight(args):
           'dir=in action=allow protocol=TCP localport={},{}'.format(args.video_port, args.audio_port))
     print("\nPresets")
     for name, cfg in PRESETS.items():
-        print("  {:<6} {}".format(name, cfg["note"]))
+        print("  {:<9} {}".format(name, cfg["note"]))
+    for alias, target in PRESET_ALIASES.items():
+        print("  {:<9} same as {}".format(alias, target))
 
 
 def portcheck(args):
@@ -367,7 +452,8 @@ def main():
     parser.add_argument("--preflight", action="store_true", help="check this machine and exit")
     parser.add_argument("--portcheck", action="store_true",
                         help="test whether the peer's ports are reachable (peer must be running)")
-    parser.add_argument("--preset", choices=sorted(PRESETS), default="safe")
+    parser.add_argument("--preset", choices=sorted(PRESETS) + sorted(PRESET_ALIASES),
+                        default="safe", metavar="NAME")
     parser.add_argument("--camera", type=int, default=0)
     parser.add_argument("--mic", type=int, default=None,
                         help="microphone index from --preflight (default: system default)")
@@ -381,6 +467,7 @@ def main():
                         help="disable adaptive bitrate, to tell encoder limits from link limits")
     parser.add_argument("--verbose", action="store_true")
     args = parser.parse_args()
+    args.preset = PRESET_ALIASES.get(args.preset, args.preset)
 
     if args.preflight:
         preflight(args)
