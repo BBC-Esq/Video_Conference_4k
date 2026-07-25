@@ -790,16 +790,34 @@ class SyncTransport:
                 if frame is None:
                     self.__logging and logger.debug("Frame not yet decodable, skipping.")
                     continue
-                if self.__rx_pts_desync:
-                    frame_pts = self.__rx_pts_fifo.pop() if self.__rx_pts_fifo else wire_pts
-                    self.__rx_pts_fifo.clear()
-                    self.__rx_pts_desync = False
-                else:
-                    frame_pts = self.__rx_pts_fifo.popleft() if self.__rx_pts_fifo else wire_pts
+                decoded = [frame]
+                ctype = compression_info.get("type") if isinstance(compression_info, dict) else None
+                if ctype in (CompressionType.NVENC, CompressionType.SOFTWARE):
+                    while len(decoded) < 8:
+                        extra = decode_sync_frame(
+                            b"",
+                            compression_info,
+                            self.__compression_handler,
+                            self.__jpeg_compression_fastdct,
+                            self.__jpeg_compression_fastupsample,
+                        )
+                        if extra is None:
+                            break
+                        decoded.append(extra)
+                paired = []
+                for f in decoded:
+                    if self.__rx_pts_desync:
+                        f_pts = self.__rx_pts_fifo.pop() if self.__rx_pts_fifo else wire_pts
+                        self.__rx_pts_fifo.clear()
+                        self.__rx_pts_desync = False
+                    else:
+                        f_pts = self.__rx_pts_fifo.popleft() if self.__rx_pts_fifo else wire_pts
+                    paired.append((f, f_pts))
+                frame = paired[-1][0]
             else:
                 frame_buffer = np.frombuffer(msg_data, dtype=msg_json["dtype"])
                 frame = frame_buffer.reshape(msg_json["shape"])
-                frame_pts = wire_pts
+                paired = [(frame, wire_pts)]
 
             if self.__multiserver_mode:
                 if msg_json["port"] not in self.__port_buffer:
@@ -814,8 +832,9 @@ class SyncTransport:
                 else:
                     self.__queue.append((None, frame))
             else:
-                self.__rx_pts_queue.append(frame_pts)
-                self.__queue.append(frame)
+                for f, f_pts in paired:
+                    self.__rx_pts_queue.append(f_pts)
+                    self.__queue.append(f)
 
     def recv(self, return_data=None) -> Optional[NDArray]:
         if not self.__receive_mode:

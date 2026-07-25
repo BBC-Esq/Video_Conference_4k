@@ -400,6 +400,8 @@ class NvidiaDecoder(BaseDecoder):
                     bgr = self._to_bgr(decoded)
                     if bgr is not None:
                         self._pending_frames.append(bgr)
+                if len(self._pending_frames) > 8:
+                    del self._pending_frames[:-8]
 
             except Exception as e:
                 self._logging and logger.error("Decode error: {}".format(e))
