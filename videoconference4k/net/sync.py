@@ -120,6 +120,7 @@ class SyncTransport:
         self.__frames_pipe_dropped = 0
         self.__force_local_idr = False
         self.__peer_wants_keyframe = False
+        self.__request_keyframe_pending = False
         overwrite_cert = False
         custom_cert_location = ""
 
@@ -909,6 +910,8 @@ class SyncTransport:
             self.__frames_since_ack += 1
             needs_ack = self.__frames_since_ack >= self.__ack_interval
 
+        req_kf = bool(request_keyframe) or self.__request_keyframe_pending
+
         msg_dict = create_frame_message(
             terminate_flag=False,
             compression=metadata if self.__compression_handler.is_enabled else False,
@@ -920,7 +923,7 @@ class SyncTransport:
             multiserver_mode=self.__multiserver_mode,
             ack=needs_ack,
             video_pts=wire_pts,
-            request_keyframe=request_keyframe,
+            request_keyframe=req_kf,
         )
 
         self.__msg_socket.send_json(msg_dict, self.__msg_flag | zmq.SNDMORE)
@@ -932,6 +935,8 @@ class SyncTransport:
         )
         self.__bytes_sent += len(encoded_data)
         self.__frames_sent += 1
+        if req_kf:
+            self.__request_keyframe_pending = False
 
         if self.__pattern < 2:
             if self.__bi_mode or self.__multiclient_mode:
@@ -1078,6 +1083,9 @@ class SyncTransport:
 
     def force_next_keyframe(self) -> None:
         self.__force_local_idr = True
+
+    def request_keyframe(self) -> None:
+        self.__request_keyframe_pending = True
 
     def consume_keyframe_request(self) -> bool:
         if self.__peer_wants_keyframe:

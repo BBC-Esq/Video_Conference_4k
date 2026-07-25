@@ -220,6 +220,9 @@ class DirectConference:
             if frame is not None:
                 with self.__frame_lock:
                     self.__local_frame = frame
+                if self.__want_remote_keyframe:
+                    self.__send_video.request_keyframe()
+                    self.__want_remote_keyframe = False
                 shed = False
                 if self.__shed_level > 0:
                     self.__shed_counter += 1
@@ -228,11 +231,8 @@ class DirectConference:
                     self.__frames_source_shed += 1
                 elif seq is None or seq != last_seq:
                     last_seq = seq
-                    req_kf = self.__want_remote_keyframe
                     try:
-                        self.__send_video.send(frame, pts_ns=pts_ns, request_keyframe=req_kf)
-                        if req_kf:
-                            self.__want_remote_keyframe = False
+                        self.__send_video.send(frame, pts_ns=pts_ns)
                     except Exception as e:
                         self.__logging and logger.debug("Video send error: {}".format(e))
                 else:
