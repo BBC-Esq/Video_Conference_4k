@@ -80,6 +80,9 @@ def nvenc_diagnosis():
     return lines
 
 
+CUDA12_WINDOWS_DRIVER_FLOOR = 527.41
+
+
 def gpu_hardware():
     import subprocess
     try:
@@ -94,6 +97,22 @@ def gpu_hardware():
         return "nvidia-smi failed: {}".format(exc)
 
 
+def driver_floor_warning(gpu_line):
+    """Compare the installed driver against the CUDA 12.x minimum for Windows."""
+    parts = [p.strip() for p in gpu_line.split(",")]
+    if len(parts) < 2:
+        return None
+    try:
+        version = float(".".join(parts[-1].split(".")[:2]))
+    except ValueError:
+        return None
+    if version < CUDA12_WINDOWS_DRIVER_FLOOR:
+        return ("Driver {} is below the CUDA 12.x minimum of {} for Windows - "
+                "update the GPU driver before the CUDA packages can load."
+                .format(parts[-1], CUDA12_WINDOWS_DRIVER_FLOOR))
+    return None
+
+
 def preflight(args):
     from videoconference4k.capture import probe_camera, AudioCapture
     from videoconference4k.codec import get_available_codecs
@@ -104,7 +123,11 @@ def preflight(args):
 
     print("\nGive the other machine this address: {}".format(lan_address()))
 
-    print("\nGPU  {}".format(gpu_hardware()))
+    gpu_line = gpu_hardware()
+    print("\nGPU  {}".format(gpu_line))
+    driver_warning = driver_floor_warning(gpu_line)
+    if driver_warning:
+        print("     {}".format(driver_warning))
 
     codecs = get_available_codecs()
     print("\nCodecs")
