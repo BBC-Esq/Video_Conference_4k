@@ -70,9 +70,10 @@ def validate_protocol(protocol: str) -> str:
     if protocol and protocol in VALID_PROTOCOLS:
         return protocol
 
-    logger.warning(
-        "Protocol is not supported or not provided. Defaulting to `tcp` protocol!"
-    )
+    if protocol is not None:
+        logger.warning(
+            "Protocol `{}` is not supported. Defaulting to `tcp` protocol!".format(protocol)
+        )
     return "tcp"
 
 
