@@ -104,7 +104,9 @@ class DirectConference:
         self.__audio_sync_offset_ns = int(audio_sync_offset_ms * 1e6)
         self.__lipsync_deadband_ns = int(lipsync_deadband_ms * 1e6)
         self.__video_hold = deque()
-        self.__video_hold_cap = max(2, int(framerate)) if framerate > 0 else 30
+        residency_s = (audio_jitter_ms + max(0.0, audio_sync_offset_ms)) / 1000.0
+        self.__video_hold_horizon_ns = int((1.0 + residency_s) * 1e9)
+        self.__video_hold_cap = max(4, int(framerate * (1.0 + residency_s))) if framerate > 0 else 60
         self.__playout_stall_s = 0.25
         self.__playout_last_value = None
         self.__playout_last_advance = 0.0
@@ -165,8 +167,9 @@ class DirectConference:
         self.__frames_dropped = 0
         self.__frames_lagged = 0
         self.__frames_source_shed = 0
-        self.__stats_prev_bytes = 0
-        self.__stats_prev_time = None
+        with self.__stats_lock:
+            self.__stats_prev_bytes = 0
+            self.__stats_prev_time = None
         self.__playout_last_value = None
         self.__playout_last_advance = 0.0
 
@@ -292,7 +295,8 @@ class DirectConference:
         sent = self.__send_video.frames_sent
         dropped = self.__send_video.frames_pipe_dropped
         bytes_now = self.__send_video.bytes_sent
-        attempts = (sent - self.__abr_prev_sent) + (dropped - self.__abr_prev_dropped)
+        sent_delta = sent - self.__abr_prev_sent
+        attempts = sent_delta + (dropped - self.__abr_prev_dropped)
         drop_frac = (dropped - self.__abr_prev_dropped) / attempts if attempts else 0.0
         goodput_bps = (bytes_now - self.__abr_prev_bytes) * 8.0 / elapsed if elapsed > 0 else 0.0
 
@@ -300,6 +304,9 @@ class DirectConference:
         self.__abr_prev_sent = sent
         self.__abr_prev_dropped = dropped
         self.__abr_prev_bytes = bytes_now
+
+        if attempts and sent_delta == 0:
+            return
 
         can_reconfigure = self.__send_video.supports_dynamic_bitrate
         lowered = False
@@ -333,10 +340,12 @@ class DirectConference:
                 self.__send_video.force_next_keyframe()
             pts_ns = self.__recv_video.last_video_pts
             with self.__frame_lock:
-                if len(self.__video_hold) >= self.__video_hold_cap:
+                self.__video_hold.append((pts_ns, frame))
+                while len(self.__video_hold) > self.__video_hold_cap or (
+                    pts_ns - self.__video_hold[0][0] > self.__video_hold_horizon_ns
+                ):
                     self.__video_hold.popleft()
                     self.__frames_dropped += 1
-                self.__video_hold.append((pts_ns, frame))
 
     def __audio_send_loop(self) -> None:
         while not self.__terminate.is_set():
