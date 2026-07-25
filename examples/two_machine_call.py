@@ -141,16 +141,35 @@ def preflight(args):
         print("  Until this is fixed, use --preset safe; a machine without NVENC")
         print("  cannot decode the other machine's hardware H264 stream.")
 
-    print("\nAudio devices")
+    print("\nAudio devices   (choose with --mic N and --speaker N)")
     try:
-        devices = AudioCapture.get_devices()
-        for kind in ("input", "output"):
-            entries = devices.get(kind, [])
-            print("  {}: {}".format(kind, len(entries)))
-            for dev in entries[:3]:
-                print("    [{}] {}".format(dev["index"], dev["name"][:52]))
-        if not devices.get("input"):
-            print("  WARNING: no microphone found - run the call with --no-audio")
+        import sounddevice as sd
+        all_devices = sd.query_devices()
+        hostapis = [h["name"] for h in sd.query_hostapis()]
+        default_in, default_out = sd.default.device
+
+        for kind, channel_key, default_index in (
+            ("MICROPHONES", "max_input_channels", default_in),
+            ("SPEAKERS", "max_output_channels", default_out),
+        ):
+            print("  {}".format(kind))
+            found = False
+            for index, dev in enumerate(all_devices):
+                if dev[channel_key] <= 0:
+                    continue
+                found = True
+                marker = "  <-- default (used when you pass no flag)" \
+                    if index == default_index else ""
+                print("    [{:>2}] {:<44} {:<12} {}ch{}".format(
+                    index, dev["name"][:44],
+                    hostapis[dev["hostapi"]][:12],
+                    dev[channel_key], marker))
+            if not found:
+                print("    none found")
+        if default_in is None or default_in < 0:
+            print("  WARNING: no microphone available - run the call with --no-audio")
+        print("  The same headset appears once per sound system; any copy works.")
+        print("  Windows WASAPI entries generally give the lowest latency.")
     except Exception as exc:
         print("  audio probe failed: {}".format(exc))
 
@@ -236,6 +255,8 @@ def run_call(args):
                 video_port=str(args.video_port),
                 audio_port=str(args.audio_port),
                 camera_id=args.camera,
+                microphone_id=args.mic,
+                speaker_id=args.speaker,
                 enable_audio=not args.no_audio,
                 logging=args.verbose,
                 **cfg
@@ -348,6 +369,10 @@ def main():
                         help="test whether the peer's ports are reachable (peer must be running)")
     parser.add_argument("--preset", choices=sorted(PRESETS), default="safe")
     parser.add_argument("--camera", type=int, default=0)
+    parser.add_argument("--mic", type=int, default=None,
+                        help="microphone index from --preflight (default: system default)")
+    parser.add_argument("--speaker", type=int, default=None,
+                        help="speaker index from --preflight (default: system default)")
     parser.add_argument("--video-port", default="5555")
     parser.add_argument("--audio-port", default="5556")
     parser.add_argument("--no-audio", action="store_true")

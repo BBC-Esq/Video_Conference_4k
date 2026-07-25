@@ -28,6 +28,7 @@ class DirectConference:
         framerate: int = 30,
         camera_id: int = 0,
         microphone_id: Optional[int] = None,
+        speaker_id: Optional[int] = None,
         video_source: Any = None,
         gpu_accelerated: bool = True,
         gpu_codec: str = "h264",
@@ -81,6 +82,7 @@ class DirectConference:
         if enable_audio:
             self.__audio = AudioCapture(
                 input_device=microphone_id,
+                output_device=speaker_id,
                 sample_rate=48000,
                 channels=1,
                 enable_input=True,
