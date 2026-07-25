@@ -112,7 +112,9 @@ class SyncTransport:
         self.__pts_fifo = deque()
         self.__pts_fifo_max = 16
         self.__last_video_pts = 0
+        self.__tx_pts_desync = False
         self.__rx_pts_fifo = deque()
+        self.__rx_pts_desync = False
         self.__rx_pts_queue = deque()
         self.__bytes_sent = 0
         self.__frames_sent = 0
@@ -777,6 +779,7 @@ class SyncTransport:
                 self.__rx_pts_fifo.append(wire_pts)
                 if len(self.__rx_pts_fifo) > self.__pts_fifo_max:
                     self.__rx_pts_fifo.popleft()
+                    self.__rx_pts_desync = True
                 frame = decode_sync_frame(
                     bytes(msg_data),
                     compression_info,
@@ -787,7 +790,12 @@ class SyncTransport:
                 if frame is None:
                     self.__logging and logger.debug("Frame not yet decodable, skipping.")
                     continue
-                frame_pts = self.__rx_pts_fifo.popleft() if self.__rx_pts_fifo else wire_pts
+                if self.__rx_pts_desync:
+                    frame_pts = self.__rx_pts_fifo.pop() if self.__rx_pts_fifo else wire_pts
+                    self.__rx_pts_fifo.clear()
+                    self.__rx_pts_desync = False
+                else:
+                    frame_pts = self.__rx_pts_fifo.popleft() if self.__rx_pts_fifo else wire_pts
             else:
                 frame_buffer = np.frombuffer(msg_data, dtype=msg_json["dtype"])
                 frame = frame_buffer.reshape(msg_json["shape"])
@@ -892,6 +900,7 @@ class SyncTransport:
         self.__pts_fifo.append(int(pts_ns))
         if len(self.__pts_fifo) > self.__pts_fifo_max:
             self.__pts_fifo.popleft()
+            self.__tx_pts_desync = True
 
         force_idr = self.__force_local_idr
         self.__force_local_idr = False
@@ -903,7 +912,12 @@ class SyncTransport:
             )
             return None
 
-        wire_pts = self.__pts_fifo.popleft() if self.__pts_fifo else int(pts_ns)
+        if self.__tx_pts_desync:
+            wire_pts = self.__pts_fifo.pop() if self.__pts_fifo else int(pts_ns)
+            self.__pts_fifo.clear()
+            self.__tx_pts_desync = False
+        else:
+            wire_pts = self.__pts_fifo.popleft() if self.__pts_fifo else int(pts_ns)
 
         needs_ack = True
         if plain_stream:

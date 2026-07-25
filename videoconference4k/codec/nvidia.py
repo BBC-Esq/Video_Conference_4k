@@ -314,6 +314,7 @@ class NvidiaDecoder(BaseDecoder):
         self._decoder = None
         self._width = None
         self._height = None
+        self._pending_frames = []
 
         import_dependency_safe("PyNvVideoCodec" if nvc is None else "")
 
@@ -350,59 +351,62 @@ class NvidiaDecoder(BaseDecoder):
     def height(self) -> Optional[int]:
         return self._height
 
+    def _to_bgr(self, decoded) -> Optional[NDArray]:
+        nv12 = _decoded_frame_to_ndarray(decoded)
+        if nv12 is None:
+            return None
+
+        if nv12.ndim == 2:
+            h, w = nv12.shape
+            actual_height = int(h * 2 / 3)
+            self._width = w
+            self._height = actual_height
+            return nv12_to_bgr(nv12.reshape(-1), w, actual_height)
+
+        if nv12.ndim == 1:
+            if self._width is None or self._height is None:
+                return None
+            return nv12_to_bgr(nv12, self._width, self._height)
+
+        if nv12.ndim == 3:
+            self._height, self._width = nv12.shape[:2]
+            return np.array(nv12, copy=True)
+
+        return None
+
     def decode(
         self,
         encoded_data: bytes,
         width: Optional[int] = None,
         height: Optional[int] = None
     ) -> Optional[NDArray]:
-        if not encoded_data:
-            return None
-
         if width is not None and height is not None:
             self._width = width
             self._height = height
 
         if self._decoder is None:
-            return None
+            return self._pending_frames.pop(0) if self._pending_frames else None
 
-        try:
-            buffer = np.frombuffer(encoded_data, dtype=np.uint8)
-            packet = nvc.PacketData()
-            packet.bsl_data = buffer.ctypes.data
-            packet.bsl = buffer.size
+        if encoded_data:
+            try:
+                buffer = np.frombuffer(encoded_data, dtype=np.uint8)
+                packet = nvc.PacketData()
+                packet.bsl_data = buffer.ctypes.data
+                packet.bsl = buffer.size
 
-            decoded_frames = self._decoder.Decode(packet)
+                decoded_frames = self._decoder.Decode(packet)
 
-            if not decoded_frames or len(decoded_frames) == 0:
-                return None
+                for decoded in decoded_frames or []:
+                    bgr = self._to_bgr(decoded)
+                    if bgr is not None:
+                        self._pending_frames.append(bgr)
 
-            nv12 = _decoded_frame_to_ndarray(decoded_frames[-1])
-            if nv12 is None:
-                return None
+            except Exception as e:
+                self._logging and logger.error("Decode error: {}".format(e))
 
-            if nv12.ndim == 2:
-                h, w = nv12.shape
-                actual_height = int(h * 2 / 3)
-                self._width = w
-                self._height = actual_height
-                return nv12_to_bgr(nv12.reshape(-1), w, actual_height)
-
-            if nv12.ndim == 1:
-                if self._width is None or self._height is None:
-                    return None
-                return nv12_to_bgr(nv12, self._width, self._height)
-
-            if nv12.ndim == 3:
-                self._height, self._width = nv12.shape[:2]
-                return np.array(nv12, copy=True)
-
-            return None
-
-        except Exception as e:
-            self._logging and logger.error("Decode error: {}".format(e))
-            return None
+        return self._pending_frames.pop(0) if self._pending_frames else None
 
     def close(self) -> None:
         self._logging and logger.debug("Closing NvidiaDecoder")
+        self._pending_frames = []
         self._decoder = None
