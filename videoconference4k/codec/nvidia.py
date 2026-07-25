@@ -237,7 +237,7 @@ class NvidiaEncoder(BaseEncoder):
             if not bool(self._encoder.Reconfigure(params)):
                 return False
         except Exception as e:
-            self._logging and logger.error("NVENC bitrate reconfigure failed: {}".format(e))
+            logger.error("NVENC bitrate reconfigure failed: {}".format(e))
             return False
         self._bitrate = bitrate
         self._maxbitrate = maxbitrate

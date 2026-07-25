@@ -60,6 +60,10 @@ class VideoStream:
     def is_running(self) -> bool:
         return self.stream.is_running
 
+    @property
+    def capture_failed(self) -> bool:
+        return getattr(self.stream, "capture_failed", False)
+
     def start(self) -> T:
         self.stream.start()
         return self

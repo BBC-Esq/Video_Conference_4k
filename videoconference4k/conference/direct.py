@@ -118,6 +118,7 @@ class DirectConference:
         self.__frames_lagged = 0
         self.__stats_prev_bytes = 0
         self.__stats_prev_time = None
+        self.__stats_lock = threading.Lock()
         self.__timer_raised = False
 
         self.__adaptive_bitrate = adaptive_bitrate
@@ -400,14 +401,15 @@ class DirectConference:
             if transport is not None:
                 reconnects += transport.reconnects
 
-        now = time.perf_counter()
-        send_kbps = 0.0
-        if self.__stats_prev_time is not None:
-            elapsed = now - self.__stats_prev_time
-            if elapsed > 0:
-                send_kbps = (bytes_sent - self.__stats_prev_bytes) * 8.0 / elapsed / 1000.0
-        self.__stats_prev_time = now
-        self.__stats_prev_bytes = bytes_sent
+        with self.__stats_lock:
+            now = time.perf_counter()
+            send_kbps = 0.0
+            if self.__stats_prev_time is not None:
+                elapsed = now - self.__stats_prev_time
+                if elapsed > 0:
+                    send_kbps = (bytes_sent - self.__stats_prev_bytes) * 8.0 / elapsed / 1000.0
+            self.__stats_prev_time = now
+            self.__stats_prev_bytes = bytes_sent
 
         return {
             "audio_playout_pts_ns": self.__audio.playout_pts_ns() if self.__audio is not None else None,
@@ -424,6 +426,7 @@ class DirectConference:
             "adaptive_bitrate": self.__adaptive_bitrate,
             "shed_level": self.__shed_level,
             "frames_source_shed": self.__frames_source_shed,
+            "capture_failed": bool(getattr(self.__video_source, "capture_failed", False)),
             "lipsync": self.__lipsync and self.__audio is not None,
         }
 
