@@ -135,6 +135,7 @@ class DirectConference:
         self.__shed_threshold = 0.15
         self.__shed_counter = 0
         self.__frames_source_shed = 0
+        self.__want_remote_keyframe = False
 
     @property
     def is_running(self) -> bool:
@@ -187,6 +188,7 @@ class DirectConference:
             )
 
         self.__terminate.clear()
+        self.__want_remote_keyframe = True
         self.__threads = [
             threading.Thread(target=self.__video_send_loop, name="DirectVideoSend", daemon=True),
             threading.Thread(target=self.__video_recv_loop, name="DirectVideoRecv", daemon=True),
@@ -223,8 +225,11 @@ class DirectConference:
                     self.__frames_source_shed += 1
                 elif seq is None or seq != last_seq:
                     last_seq = seq
+                    req_kf = self.__want_remote_keyframe
                     try:
-                        self.__send_video.send(frame, pts_ns=pts_ns)
+                        self.__send_video.send(frame, pts_ns=pts_ns, request_keyframe=req_kf)
+                        if req_kf:
+                            self.__want_remote_keyframe = False
                     except Exception as e:
                         self.__logging and logger.debug("Video send error: {}".format(e))
                 else:
@@ -300,6 +305,8 @@ class DirectConference:
                 break
             if frame is None:
                 break
+            if self.__recv_video.consume_keyframe_request() and self.__send_video is not None:
+                self.__send_video.force_next_keyframe()
             pts_ns = self.__recv_video.last_video_pts
             with self.__frame_lock:
                 self.__remote_frame = frame
@@ -392,6 +399,9 @@ class DirectConference:
     def get_local_frame(self) -> Optional[NDArray]:
         with self.__frame_lock:
             return self.__local_frame
+
+    def request_keyframe(self) -> None:
+        self.__want_remote_keyframe = True
 
     def stop(self) -> None:
         self.__terminate.set()

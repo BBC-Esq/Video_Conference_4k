@@ -164,6 +164,7 @@ class NvidiaEncoder(BaseEncoder):
 
         self._bitrate = bitrate
         self._maxbitrate = max_bitrate
+        self._force_idr_flag = int(nvc.FORCEIDR) if hasattr(nvc, "FORCEIDR") else None
 
         core_keys = ("preset", "tuning_info", "fps", "gop", "rc", "bitrate", "maxbitrate")
         core_params = {k: v for k, v in encoder_params.items() if k in core_keys}
@@ -242,7 +243,7 @@ class NvidiaEncoder(BaseEncoder):
         self._maxbitrate = maxbitrate
         return True
 
-    def encode(self, bgr_frame: NDArray) -> bytes:
+    def encode(self, bgr_frame: NDArray, force_idr: bool = False) -> bytes:
         import cv2
 
         if bgr_frame.shape[1] != self._width or bgr_frame.shape[0] != self._height:
@@ -252,7 +253,10 @@ class NvidiaEncoder(BaseEncoder):
 
         nv12_data = bgr_to_nv12_into(bgr_frame, self._i420_scratch, self._nv12_buffer)
 
-        encoded_packets = self._encoder.Encode(nv12_data)
+        if force_idr and self._force_idr_flag is not None:
+            encoded_packets = self._encoder.Encode(nv12_data, self._force_idr_flag)
+        else:
+            encoded_packets = self._encoder.Encode(nv12_data)
 
         if encoded_packets:
             if isinstance(encoded_packets, list):

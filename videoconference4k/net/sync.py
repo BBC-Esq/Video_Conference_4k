@@ -118,6 +118,8 @@ class SyncTransport:
         self.__frames_sent = 0
         self.__reconnects = 0
         self.__frames_pipe_dropped = 0
+        self.__force_local_idr = False
+        self.__peer_wants_keyframe = False
         overwrite_cert = False
         custom_cert_location = ""
 
@@ -767,6 +769,8 @@ class SyncTransport:
                     logger.warning("`return_data` is disabled for this pattern!")
 
             wire_pts = msg_json.get("video_pts", 0)
+            if msg_json.get("request_keyframe"):
+                self.__peer_wants_keyframe = True
             compression_info = msg_json.get("compression")
             if compression_info:
                 self.__rx_pts_fifo.append(wire_pts)
@@ -830,7 +834,8 @@ class SyncTransport:
                 break
         return None
 
-    def send(self, frame: NDArray, message: Any = None, pts_ns: int = 0) -> Optional[Any]:
+    def send(self, frame: NDArray, message: Any = None, pts_ns: int = 0,
+             request_keyframe: bool = False) -> Optional[Any]:
         if self.__receive_mode:
             self.__terminate.set()
             raise ValueError(
@@ -887,7 +892,9 @@ class SyncTransport:
         if len(self.__pts_fifo) > self.__pts_fifo_max:
             self.__pts_fifo.popleft()
 
-        encoded_data, metadata = self.__compression_handler.encode_frame(frame)
+        force_idr = self.__force_local_idr
+        self.__force_local_idr = False
+        encoded_data, metadata = self.__compression_handler.encode_frame(frame, force_idr=force_idr)
 
         if self.__compression_handler.is_enabled and not encoded_data:
             self.__logging and logger.debug(
@@ -913,6 +920,7 @@ class SyncTransport:
             multiserver_mode=self.__multiserver_mode,
             ack=needs_ack,
             video_pts=wire_pts,
+            request_keyframe=request_keyframe,
         )
 
         self.__msg_socket.send_json(msg_dict, self.__msg_flag | zmq.SNDMORE)
@@ -1067,6 +1075,15 @@ class SyncTransport:
 
     def reconfigure_bitrate(self, bitrate: int, maxbitrate: Any = None) -> bool:
         return self.__compression_handler.reconfigure_bitrate(bitrate, maxbitrate)
+
+    def force_next_keyframe(self) -> None:
+        self.__force_local_idr = True
+
+    def consume_keyframe_request(self) -> bool:
+        if self.__peer_wants_keyframe:
+            self.__peer_wants_keyframe = False
+            return True
+        return False
 
     def signal_stop(self) -> None:
         self.__terminate.set()

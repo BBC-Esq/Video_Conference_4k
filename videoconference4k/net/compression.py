@@ -237,7 +237,7 @@ class CompressionHandler:
             )
         return self._jpeg_decoder
 
-    def encode_frame(self, frame: NDArray) -> Tuple[bytes, Dict[str, Any]]:
+    def encode_frame(self, frame: NDArray, force_idr: bool = False) -> Tuple[bytes, Dict[str, Any]]:
         if not frame.flags["C_CONTIGUOUS"]:
             frame = np.ascontiguousarray(frame, dtype=frame.dtype)
 
@@ -245,7 +245,7 @@ class CompressionHandler:
 
         if self._use_nvidia:
             encoder = self._get_nvidia_encoder(width, height)
-            encoded = encoder.encode(frame)
+            encoded = encoder.encode(frame, force_idr=force_idr)
             metadata = {
                 "type": CompressionType.NVENC,
                 "codec": self._gpu_codec,
