@@ -152,6 +152,23 @@ class DirectConference:
         if self.__is_running:
             return self
 
+        self.__abr_target = self.__abr_max
+        self.__abr_last_check = None
+        self.__abr_last_increase = 0.0
+        self.__abr_prev_sent = 0
+        self.__abr_prev_dropped = 0
+        self.__abr_prev_bytes = 0
+        self.__shed_level = 0
+        self.__shed_counter = 0
+        self.__frames_skipped = 0
+        self.__frames_dropped = 0
+        self.__frames_lagged = 0
+        self.__frames_source_shed = 0
+        self.__stats_prev_bytes = 0
+        self.__stats_prev_time = None
+        self.__playout_last_value = None
+        self.__playout_last_advance = 0.0
+
         self.__timer_raised = raise_timer_resolution(1)
 
         if self.__enable_upnp:
@@ -258,8 +275,7 @@ class DirectConference:
         return None
 
     def __maybe_adapt_bitrate(self, now: float) -> None:
-        if not (self.__adaptive_bitrate and self.__send_video is not None
-                and self.__send_video.supports_dynamic_bitrate):
+        if not self.__adaptive_bitrate or self.__send_video is None:
             return
         if self.__abr_last_check is None:
             self.__abr_last_check = now
@@ -284,18 +300,22 @@ class DirectConference:
         self.__abr_prev_dropped = dropped
         self.__abr_prev_bytes = bytes_now
 
-        new_target = self._abr_decision(drop_frac, goodput_bps, now)
-        if new_target is not None and new_target != self.__abr_target:
-            if self.__send_video.reconfigure_bitrate(new_target):
-                self.__abr_target = new_target
-                self.__logging and logger.debug(
-                    "Adaptive bitrate -> {} kbps (drop {:.0%}, goodput {:.0f} kbps).".format(
-                        new_target // 1000, drop_frac, goodput_bps / 1000
+        can_reconfigure = self.__send_video.supports_dynamic_bitrate
+        lowered = False
+        if can_reconfigure:
+            new_target = self._abr_decision(drop_frac, goodput_bps, now)
+            if new_target is not None and new_target != self.__abr_target:
+                if self.__send_video.reconfigure_bitrate(new_target):
+                    lowered = new_target < self.__abr_target
+                    self.__abr_target = new_target
+                    self.__logging and logger.debug(
+                        "Adaptive bitrate -> {} kbps (drop {:.0%}, goodput {:.0f} kbps).".format(
+                            new_target // 1000, drop_frac, goodput_bps / 1000
+                        )
                     )
-                )
 
-        at_floor = self.__abr_target <= int(self.__abr_min * 1.05)
-        if drop_frac > self.__shed_threshold and at_floor:
+        at_floor = not can_reconfigure or self.__abr_target <= int(self.__abr_min * 1.05)
+        if drop_frac > self.__shed_threshold and at_floor and not lowered:
             self.__shed_level = min(self.__shed_max, self.__shed_level + 1)
         elif drop_frac <= 0.0 and self.__shed_level > 0:
             self.__shed_level = max(0, self.__shed_level - 1)
