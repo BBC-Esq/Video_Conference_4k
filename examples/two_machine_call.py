@@ -294,6 +294,11 @@ def preflight(args):
     from videoconference4k.capture import probe_camera, AudioCapture
     from videoconference4k.codec import get_available_codecs
 
+    try:
+        sys.stdout.reconfigure(line_buffering=True)
+    except Exception:
+        pass
+
     print("=" * 68)
     print("PREFLIGHT  host {}  address {}".format(socket.gethostname(), lan_address()))
     print("=" * 68)
@@ -371,25 +376,29 @@ def preflight(args):
     except Exception as exc:
         print("\nCamera mode list unavailable: {}".format(exc))
 
-    print("\nCamera (measured by actually capturing, not advertised)")
-    presets = []
-    for cfg in PRESETS.values():
-        entry = (cfg["resolution"][0], cfg["resolution"][1], cfg["framerate"])
-        if entry not in presets:
-            presets.append(entry)
-    try:
-        for entry in probe_camera(source=args.camera, presets=presets, sample=20):
-            req_w, req_h, req_fps = entry["requested"]
-            if not entry["opened"]:
-                print("  {}x{}@{:<3} could not open camera".format(req_w, req_h, req_fps))
-                continue
-            print("  {}x{}@{:<3} -> delivered {} at {:.1f} fps  "
-                  "(worst frame gap {:.0f} ms, p99 {:.0f} ms, {})".format(
-                      req_w, req_h, req_fps, entry["delivered"], entry["measured_fps"],
-                      entry["worst_interval_ms"], entry["p99_interval_ms"],
-                      entry["fourcc"] or "n/a"))
-    except Exception as exc:
-        print("  camera probe failed: {}".format(exc))
+    if args.measure_camera:
+        presets = []
+        for cfg in PRESETS.values():
+            entry = (cfg["resolution"][0], cfg["resolution"][1], cfg["framerate"])
+            if entry not in presets:
+                presets.append(entry)
+        print("\nCamera (measured by capturing from each mode - about a minute each)")
+        try:
+            for want in presets:
+                print("  {}x{}@{} ...".format(*want), end=" ", flush=True)
+                entry = probe_camera(source=args.camera, presets=[want], sample=20)[0]
+                if not entry["opened"]:
+                    print("could not open camera")
+                    continue
+                print("delivered {} at {:.1f} fps  (worst gap {:.0f} ms, p99 {:.0f} ms)".format(
+                    entry["delivered"], entry["measured_fps"],
+                    entry["worst_interval_ms"], entry["p99_interval_ms"]))
+        except Exception as exc:
+            print("  camera probe failed: {}".format(exc))
+    else:
+        print("\nCamera (measured) skipped - the advertised list above comes from the")
+        print("  camera itself and is authoritative. Add --measure-camera to also capture")
+        print("  from every mode and time the frames; that takes several minutes.")
 
     print("\nPorts {} and {} must accept inbound TCP.".format(args.video_port, args.audio_port))
     print("If no video appears during the call, run this once as Administrator:")
@@ -569,6 +578,8 @@ def main():
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("peer", nargs="?", help="LAN address of the other machine")
     parser.add_argument("--preflight", action="store_true", help="check this machine and exit")
+    parser.add_argument("--measure-camera", action="store_true",
+                        help="also capture from every camera mode (slow: about a minute per mode)")
     parser.add_argument("--portcheck", action="store_true",
                         help="test whether the peer's ports are reachable (peer must be running)")
     parser.add_argument("--preset", choices=sorted(PRESETS) + sorted(PRESET_ALIASES),
