@@ -152,6 +152,7 @@ NO_HARDWARE = "hardware cannot do it"
 NO_BUILD = "not in this ffmpeg build"
 NO_FFMPEG = "this ffmpeg cannot"
 UNTESTED = "not testable here"
+NO_ROUTE = "could not run here"
 
 
 def ffmpeg_encoder_works(name):
@@ -193,14 +194,23 @@ def graphics_adapters():
         return []
 
 
+QSV_RUNTIMES = [
+    ("libmfxhw64.dll", "legacy Media SDK"),
+    ("libvpl.dll", "oneVPL"),
+    ("libmfx64.dll", "Media SDK dispatcher"),
+]
+
+
 def qsv_runtime_dll():
-    """The Intel driver installs these; their presence means the hardware side of QSV is ready."""
+    """List every Quick Sync runtime present.
+
+    Which one is installed decides what ffmpeg can reach: the legacy Media SDK
+    exposes less than oneVPL, so a codec can fail here while the silicon is fine.
+    """
     import os
     system32 = os.path.join(os.environ.get("SystemRoot", r"C:\Windows"), "System32")
-    for dll in ("libmfxhw64.dll", "libvpl.dll", "libmfx64.dll"):
-        if os.path.exists(os.path.join(system32, dll)):
-            return dll
-    return None
+    return [(dll, kind) for dll, kind in QSV_RUNTIMES
+            if os.path.exists(os.path.join(system32, dll))]
 
 
 def report_graphics():
@@ -210,11 +220,13 @@ def report_graphics():
         print("\nGraphics hardware")
         for name, driver in adapters:
             print("  {:<38} driver {}".format(name[:38], driver))
-    runtime = qsv_runtime_dll() if intel else None
+    runtime = qsv_runtime_dll() if intel else []
     if intel:
-        print("  Quick Sync runtime: {}".format(
-            "{} present".format(runtime) if runtime
-            else "NOT found - update the Intel graphics driver"))
+        if runtime:
+            print("  Quick Sync runtimes: {}".format(
+                ", ".join("{} ({})".format(dll, kind) for dll, kind in runtime)))
+        else:
+            print("  Quick Sync runtimes: NONE found - update the Intel graphics driver")
     return bool(intel), runtime
 
 
@@ -383,15 +395,24 @@ def report_encoders(has_intel_gpu, qsv_runtime, gpu_line):
     print("  {:<26} a fuller ffmpeg would be needed; hardware not testable this way"
           .format(NO_BUILD))
     print("  {:<26} could not be tested, because encoding it failed first".format(UNTESTED))
+    print("  {:<26} refused by the only route available; chip vs driver unresolved"
+          .format(NO_ROUTE))
 
     nvidia_name = gpu_line.split(",")[0] if "," in gpu_line else "NVIDIA"
     report_nvenc(nvidia_name, listed)
 
     if listed:
+        qsv_rows = [(label, NO_ROUTE if verdict == NO_HARDWARE else verdict, detail)
+                    for label, verdict, detail in ffmpeg_codec_support(QSV_CODECS, listed)]
         _print_group("Intel Quick Sync{}".format(
             "" if has_intel_gpu else " - no Intel GPU detected"),
-            "tested through ffmpeg, the only route available",
-            ffmpeg_codec_support(QSV_CODECS, listed))
+            "tested through ffmpeg, the only route this program has to it",
+            qsv_rows)
+        if any(verdict == NO_ROUTE for _, verdict, _ in qsv_rows):
+            print("      A Quick Sync failure cannot separate the chip from the driver or")
+            print("      runtime, because ffmpeg is the only way this program reaches it.")
+            print("      Errors mentioning querying or runtime versions usually mean the")
+            print("      installed runtime is too old rather than that the silicon lacks it.")
         _print_group("CPU / software", "tested through ffmpeg",
                      ffmpeg_codec_support(CPU_CODECS, listed))
     else:
