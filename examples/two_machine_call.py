@@ -218,6 +218,30 @@ def report_graphics():
     return bool(intel), runtime
 
 
+class quiet_codec_logs:
+    """A probe deliberately tries codecs that may fail; that is data, not an error.
+
+    The encoder logs rejections at ERROR unconditionally, which is right during a
+    call and pure noise here, where it also breaks the table it prints into.
+    """
+
+    NAMES = ("NvidiaCodec", "IntelCodec", "SoftwareCodec", "CodecFactory", "Compression")
+
+    def __enter__(self):
+        import logging as pylog
+        self._saved = []
+        for name in self.NAMES:
+            logger = pylog.getLogger(name)
+            self._saved.append((logger, logger.level))
+            logger.setLevel(pylog.CRITICAL + 1)
+        return self
+
+    def __exit__(self, *exc_info):
+        for logger, level in self._saved:
+            logger.setLevel(level)
+        return False
+
+
 def nvidia_roundtrip(codec):
     """Encode then decode with the classes a call actually uses.
 
@@ -268,7 +292,8 @@ def nvenc_codec_support():
         return None
     results = []
     for codec, label in NVENC_CODECS:
-        can_encode, can_decode, detail = nvidia_roundtrip(codec)
+        with quiet_codec_logs():
+            can_encode, can_decode, detail = nvidia_roundtrip(codec)
         results.append((label,
                         WORKS if can_encode else NO_HARDWARE,
                         WORKS if can_decode else (UNTESTED if not can_encode else NO_HARDWARE),
