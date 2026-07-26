@@ -151,6 +151,7 @@ WORKS = "works"
 NO_HARDWARE = "hardware cannot do it"
 NO_BUILD = "not in this ffmpeg build"
 NO_FFMPEG = "this ffmpeg cannot"
+UNTESTED = "not testable here"
 
 
 def ffmpeg_encoder_works(name):
@@ -217,20 +218,61 @@ def report_graphics():
     return bool(intel), runtime
 
 
-def nvenc_codec_support():
-    """Ask the GPU itself. No ffmpeg involved, so the answer is pure hardware capability."""
+def nvidia_roundtrip(codec):
+    """Encode then decode with the classes a call actually uses.
+
+    Indirect probes lie: a stream from libx264 fails to decode on hardware that
+    decodes its own NVENC output perfectly, and this ffmpeg lists cuvid decoders
+    it cannot run. Only a round trip through the real path is trustworthy.
+    """
+    import numpy as np
     try:
-        import PyNvVideoCodec as nvc
+        from videoconference4k.codec.nvidia import NvidiaEncoder, NvidiaDecoder
+    except Exception as exc:
+        return False, False, str(exc)[:64]
+
+    encoder = decoder = None
+    try:
+        encoder = NvidiaEncoder(width=320, height=240, framerate=30,
+                                bitrate=2_000_000, codec=codec)
+    except Exception as exc:
+        return False, False, " ".join(str(exc).split())[:64]
+
+    try:
+        decoder = NvidiaDecoder(codec=codec)
+        decoded = 0
+        for index in range(14):
+            frame = np.full((240, 320, 3), 20 + index * 12, np.uint8)
+            packet = encoder.encode(frame)
+            if packet and decoder.decode(packet, width=320, height=240) is not None:
+                decoded += 1
+        tail = encoder.flush()
+        if tail and decoder.decode(tail, width=320, height=240) is not None:
+            decoded += 1
+        return True, decoded > 0, "" if decoded else "encoder ran but nothing decoded"
+    except Exception as exc:
+        return True, False, " ".join(str(exc).split())[:64]
+    finally:
+        for handle in (encoder, decoder):
+            try:
+                handle is not None and handle.close()
+            except Exception:
+                pass
+
+
+def nvenc_codec_support():
+    """Encode and decode verdicts per codec, or None when PyNvVideoCodec is absent."""
+    try:
+        import PyNvVideoCodec  # noqa: F401
     except Exception:
         return None
     results = []
     for codec, label in NVENC_CODECS:
-        try:
-            encoder = nvc.CreateEncoder(256, 256, "NV12", True, codec=codec)
-            del encoder
-            results.append((label, WORKS, ""))
-        except Exception as exc:
-            results.append((label, NO_HARDWARE, " ".join(str(exc).split())[:64]))
+        can_encode, can_decode, detail = nvidia_roundtrip(codec)
+        results.append((label,
+                        WORKS if can_encode else NO_HARDWARE,
+                        WORKS if can_decode else (UNTESTED if not can_encode else NO_HARDWARE),
+                        detail))
     return results
 
 
@@ -260,23 +302,26 @@ def _print_group(title, subtitle, rows):
 
 def report_nvenc(nvidia_name, listed):
     """NVENC two ways: the route this program uses, and ffmpeg's, so a mismatch is visible."""
-    print("\n  NVIDIA NVENC - {}".format(nvidia_name[:40]))
-    print("    (this program reaches NVENC through PyNvVideoCodec, which talks to the")
-    print("     driver directly - ffmpeg is NOT required for it. The ffmpeg column is")
-    print("     shown only because a disagreement between the two is diagnostic.)")
+    print("\n  NVIDIA NVENC / NVDEC - {}".format(nvidia_name[:40]))
+    print("    (encode and decode are proven together by encoding frames and decoding")
+    print("     them back through the very classes a call uses - ffmpeg is NOT required")
+    print("     for this path. ffmpeg's own column is shown only to expose a mismatch.)")
 
     direct = nvenc_codec_support()
     via_ffmpeg = ffmpeg_codec_support(NVENC_VIA_FFMPEG, listed) if listed else None
 
-    print("    {:<20} {:<26} {}".format("", "this program", "ffmpeg"))
+    print("    {:<14} {:<23} {:<23} {}".format("", "encode", "decode", "ffmpeg's own encode"))
     for position, (_, label) in enumerate(NVENC_CODECS):
-        own = direct[position][1] if direct else "PyNvVideoCodec missing"
+        if direct:
+            own_enc, own_dec = direct[position][1], direct[position][2]
+        else:
+            own_enc = own_dec = "PyNvVideoCodec missing"
         if via_ffmpeg is None:
             other = "ffmpeg not found"
         else:
             verdict = via_ffmpeg[position][1]
             other = NO_FFMPEG if verdict == NO_HARDWARE else verdict
-        print("    {:<20} {:<26} {}".format(label, own, other))
+        print("    {:<14} {:<23} {:<23} {}".format(label, own_enc, own_dec, other))
 
     if direct is None:
         if via_ffmpeg and any(v == WORKS for _, v, _ in via_ffmpeg):
@@ -288,6 +333,10 @@ def report_nvenc(nvidia_name, listed):
     for position, (_, label) in enumerate(NVENC_CODECS):
         own = direct[position][1]
         other = via_ffmpeg[position][1] if via_ffmpeg else None
+        if own == WORKS and direct[position][2] != WORKS:
+            print("\n    {}: encoding works but decoding the result back did not, so this".format(label))
+            print("    codec is not usable end to end here. The silicon may well support")
+            print("    decoding it - this test only proves the program's own path failed.")
         if own != WORKS and other == WORKS:
             print("\n    MISMATCH on {}: ffmpeg drives the GPU but PyNvVideoCodec cannot."
                   .format(label))
@@ -303,11 +352,12 @@ def report_encoders(has_intel_gpu, qsv_runtime, gpu_line):
     from videoconference4k.codec.base import get_ffmpeg_encoders
     listed = get_ffmpeg_encoders()
 
-    print("\nEncoder capability - every entry below was tested by actually encoding")
+    print("\nCodec capability - every entry below was tested by actually running it")
     print("  {:<26} usable right now".format(WORKS))
-    print("  {:<26} the encoder exists in software, this chip cannot run it".format(NO_HARDWARE))
+    print("  {:<26} the codec exists in software, this chip cannot run it".format(NO_HARDWARE))
     print("  {:<26} a fuller ffmpeg would be needed; hardware not testable this way"
           .format(NO_BUILD))
+    print("  {:<26} could not be tested, because encoding it failed first".format(UNTESTED))
 
     nvidia_name = gpu_line.split(",")[0] if "," in gpu_line else "NVIDIA"
     report_nvenc(nvidia_name, listed)
