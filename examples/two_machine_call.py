@@ -140,13 +140,14 @@ def _run_ffmpeg(arguments, timeout=25):
         return ""
 
 
-FFMPEG_ENCODERS = [
-    ("h264_qsv", "Intel Quick Sync H.264"),
-    ("hevc_qsv", "Intel Quick Sync HEVC"),
-    ("av1_qsv", "Intel Quick Sync AV1"),
-    ("libx264", "Software x264 (CPU)"),
-    ("libx265", "Software x265 (CPU)"),
-]
+NVENC_CODECS = [("h264", "H.264"), ("hevc", "HEVC/H.265"), ("av1", "AV1")]
+QSV_CODECS = [("h264_qsv", "H.264"), ("hevc_qsv", "HEVC/H.265"), ("av1_qsv", "AV1")]
+CPU_CODECS = [("libx264", "H.264 (x264)"), ("libx265", "HEVC/H.265 (x265)"),
+              ("libsvtav1", "AV1 (SVT-AV1)"), ("libaom-av1", "AV1 (AOM)")]
+
+WORKS = "works"
+NO_HARDWARE = "hardware cannot do it"
+NO_BUILD = "not in this ffmpeg build"
 
 
 def ffmpeg_encoder_works(name):
@@ -213,34 +214,83 @@ def report_graphics():
     return bool(intel), runtime
 
 
-def report_ffmpeg_encoders(has_intel_gpu, qsv_runtime):
-    from videoconference4k.codec.base import get_ffmpeg_encoders
-    listed = get_ffmpeg_encoders()
-    if not listed:
-        print("\nffmpeg not found - only the NVIDIA and JPEG paths are available")
-        if has_intel_gpu:
-            print("  This machine HAS an Intel GPU, so installing ffmpeg would unlock Quick Sync.")
-        return
+def nvenc_codec_support():
+    """Ask the GPU itself. No ffmpeg involved, so the answer is pure hardware capability."""
+    try:
+        import PyNvVideoCodec as nvc
+    except Exception:
+        return None
+    results = []
+    for codec, label in NVENC_CODECS:
+        try:
+            encoder = nvc.CreateEncoder(256, 256, "NV12", True, codec=codec)
+            del encoder
+            results.append((label, WORKS, ""))
+        except Exception as exc:
+            results.append((label, NO_HARDWARE, " ".join(str(exc).split())[:64]))
+    return results
 
-    print("\nEncoders on this machine (tested by encoding, not just listed)")
-    missing_qsv = []
-    for name, label in FFMPEG_ENCODERS:
+
+def ffmpeg_codec_support(codec_list, listed):
+    results = []
+    for name, label in codec_list:
         if name not in listed:
-            print("  {:<24} not built into this ffmpeg".format(label))
-            if name.endswith("_qsv"):
-                missing_qsv.append(label)
+            results.append((label, NO_BUILD, ""))
             continue
         ok, detail = ffmpeg_encoder_works(name)
-        print("  {:<24} {}".format(label, "works" if ok
-                                   else "listed but FAILS here: {}".format(detail)))
+        results.append((label, WORKS if ok else NO_HARDWARE, "" if ok else detail))
+    return results
 
-    if missing_qsv and has_intel_gpu:
-        print("\n  This machine has an Intel GPU{}, but this ffmpeg build has no"
+
+def _print_group(title, subtitle, rows):
+    print("\n  {}".format(title))
+    print("    ({})".format(subtitle))
+    if rows is None:
+        print("    unavailable on this machine")
+        return
+    for label, verdict, detail in rows:
+        line = "    {:<20} {}".format(label, verdict)
+        if verdict == NO_HARDWARE and detail:
+            line += "  [{}]".format(detail[:52])
+        print(line)
+
+
+def report_encoders(has_intel_gpu, qsv_runtime, gpu_line):
+    from videoconference4k.codec.base import get_ffmpeg_encoders
+    listed = get_ffmpeg_encoders()
+
+    print("\nEncoder capability - every entry below was tested by actually encoding")
+    print("  {:<26} usable right now".format(WORKS))
+    print("  {:<26} the encoder exists in software, this chip cannot run it".format(NO_HARDWARE))
+    print("  {:<26} a fuller ffmpeg would be needed; hardware not testable this way"
+          .format(NO_BUILD))
+
+    nvidia_name = gpu_line.split(",")[0] if "," in gpu_line else "NVIDIA"
+    _print_group("NVIDIA NVENC - {}".format(nvidia_name[:40]),
+                 "asked of the GPU directly, ffmpeg not involved",
+                 nvenc_codec_support())
+
+    if listed:
+        _print_group("Intel Quick Sync{}".format(
+            "" if has_intel_gpu else " - no Intel GPU detected"),
+            "tested through ffmpeg, the only route available",
+            ffmpeg_codec_support(QSV_CODECS, listed))
+        _print_group("CPU / software", "tested through ffmpeg",
+                     ffmpeg_codec_support(CPU_CODECS, listed))
+    else:
+        print("\n  ffmpeg not found - Quick Sync and CPU encoding cannot be used or tested")
+        if has_intel_gpu:
+            print("    This machine HAS an Intel GPU, so installing ffmpeg would unlock Quick Sync.")
+        return
+
+    unbuilt_qsv = [label for label, verdict, _ in
+                   ffmpeg_codec_support(QSV_CODECS, listed) if verdict == NO_BUILD]
+    if unbuilt_qsv and has_intel_gpu:
+        print("\n  This machine has an Intel GPU{} but this ffmpeg build lacks"
               .format(" with the Quick Sync runtime installed" if qsv_runtime else ""))
-        print("  Quick Sync support compiled in. A full ffmpeg build (for example the")
-        print("  gyan.dev or BtbN Windows builds) would enable it - the hardware is fine.")
-    elif missing_qsv:
-        print("\n  No Intel GPU detected, so Quick Sync is not applicable on this machine.")
+        print("  Quick Sync for: {}. The hardware may well support them - install a".format(
+            ", ".join(unbuilt_qsv)))
+        print("  full ffmpeg build (gyan.dev or BtbN on Windows) to find out.")
 
 
 def dshow_video_devices():
@@ -332,7 +382,7 @@ def preflight(args):
         print("\nGraphics adapter probe failed: {}".format(exc))
 
     try:
-        report_ffmpeg_encoders(has_intel_gpu, qsv_runtime)
+        report_encoders(has_intel_gpu, qsv_runtime, gpu_line)
     except Exception as exc:
         print("\nEncoder test failed: {}".format(exc))
 
