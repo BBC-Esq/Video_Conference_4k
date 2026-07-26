@@ -141,6 +141,8 @@ def _run_ffmpeg(arguments, timeout=25):
 
 
 NVENC_CODECS = [("h264", "H.264"), ("hevc", "HEVC/H.265"), ("av1", "AV1")]
+NVENC_VIA_FFMPEG = [("h264_nvenc", "H.264"), ("hevc_nvenc", "HEVC/H.265"),
+                    ("av1_nvenc", "AV1")]
 QSV_CODECS = [("h264_qsv", "H.264"), ("hevc_qsv", "HEVC/H.265"), ("av1_qsv", "AV1")]
 CPU_CODECS = [("libx264", "H.264 (x264)"), ("libx265", "HEVC/H.265 (x265)"),
               ("libsvtav1", "AV1 (SVT-AV1)"), ("libaom-av1", "AV1 (AOM)")]
@@ -148,6 +150,7 @@ CPU_CODECS = [("libx264", "H.264 (x264)"), ("libx265", "HEVC/H.265 (x265)"),
 WORKS = "works"
 NO_HARDWARE = "hardware cannot do it"
 NO_BUILD = "not in this ffmpeg build"
+NO_FFMPEG = "this ffmpeg cannot"
 
 
 def ffmpeg_encoder_works(name):
@@ -255,6 +258,47 @@ def _print_group(title, subtitle, rows):
         print(line)
 
 
+def report_nvenc(nvidia_name, listed):
+    """NVENC two ways: the route this program uses, and ffmpeg's, so a mismatch is visible."""
+    print("\n  NVIDIA NVENC - {}".format(nvidia_name[:40]))
+    print("    (this program reaches NVENC through PyNvVideoCodec, which talks to the")
+    print("     driver directly - ffmpeg is NOT required for it. The ffmpeg column is")
+    print("     shown only because a disagreement between the two is diagnostic.)")
+
+    direct = nvenc_codec_support()
+    via_ffmpeg = ffmpeg_codec_support(NVENC_VIA_FFMPEG, listed) if listed else None
+
+    print("    {:<20} {:<26} {}".format("", "this program", "ffmpeg"))
+    for position, (_, label) in enumerate(NVENC_CODECS):
+        own = direct[position][1] if direct else "PyNvVideoCodec missing"
+        if via_ffmpeg is None:
+            other = "ffmpeg not found"
+        else:
+            verdict = via_ffmpeg[position][1]
+            other = NO_FFMPEG if verdict == NO_HARDWARE else verdict
+        print("    {:<20} {:<26} {}".format(label, own, other))
+
+    if direct is None:
+        if via_ffmpeg and any(v == WORKS for _, v, _ in via_ffmpeg):
+            print("\n    MISMATCH: the GPU encodes fine through ffmpeg, but PyNvVideoCodec is")
+            print("    missing and that is the ONLY route this program uses. The GPU and")
+            print("    driver are healthy - install the four hardware packages to use it.")
+        return
+
+    for position, (_, label) in enumerate(NVENC_CODECS):
+        own = direct[position][1]
+        other = via_ffmpeg[position][1] if via_ffmpeg else None
+        if own != WORKS and other == WORKS:
+            print("\n    MISMATCH on {}: ffmpeg drives the GPU but PyNvVideoCodec cannot."
+                  .format(label))
+            print("    The silicon supports it; the Python binding or its CUDA libraries do not.")
+        elif own == WORKS and other in (NO_HARDWARE, NO_BUILD):
+            print("\n    {} works for this program. Your ffmpeg cannot drive it, but that is"
+                  .format(label))
+            print("    harmless: the program never uses ffmpeg for NVENC. The GPU is proven")
+            print("    capable by the direct test, so treat the ffmpeg column as ffmpeg's limit.")
+
+
 def report_encoders(has_intel_gpu, qsv_runtime, gpu_line):
     from videoconference4k.codec.base import get_ffmpeg_encoders
     listed = get_ffmpeg_encoders()
@@ -266,9 +310,7 @@ def report_encoders(has_intel_gpu, qsv_runtime, gpu_line):
           .format(NO_BUILD))
 
     nvidia_name = gpu_line.split(",")[0] if "," in gpu_line else "NVIDIA"
-    _print_group("NVIDIA NVENC - {}".format(nvidia_name[:40]),
-                 "asked of the GPU directly, ffmpeg not involved",
-                 nvenc_codec_support())
+    report_nvenc(nvidia_name, listed)
 
     if listed:
         _print_group("Intel Quick Sync{}".format(
