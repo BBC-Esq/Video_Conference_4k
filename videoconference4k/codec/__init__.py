@@ -27,6 +27,15 @@ from .jpeg import (
     JpegEncoder,
     JpegDecoder,
 )
+from .capability import (
+    KNOWN_CODECS,
+    DEFAULT_PRIORITY,
+    can_encode,
+    can_decode,
+    local_capabilities,
+    choose_send_codec,
+    describe,
+)
 from .opus import (
     has_opus_codec,
     OpusEncoder,
@@ -61,6 +70,13 @@ __all__ = [
     "SoftwareEncoderSync",
     "SoftwareDecoder",
     "has_jpeg_codec",
+    "KNOWN_CODECS",
+    "DEFAULT_PRIORITY",
+    "can_encode",
+    "can_decode",
+    "local_capabilities",
+    "choose_send_codec",
+    "describe",
     "JpegEncoder",
     "JpegDecoder",
     "has_opus_codec",

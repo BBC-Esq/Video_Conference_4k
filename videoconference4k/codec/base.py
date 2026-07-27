@@ -52,6 +52,22 @@ def ffmpeg_encoder_runs(name: str) -> bool:
 
 
 @functools.lru_cache(maxsize=1)
+def get_ffmpeg_decoders() -> str:
+    if get_ffmpeg_path() is None:
+        return ""
+    try:
+        result = subprocess.run(
+            ["ffmpeg", "-hide_banner", "-decoders"],
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+        return result.stdout
+    except Exception:
+        return ""
+
+
+@functools.lru_cache(maxsize=1)
 def get_ffmpeg_encoders() -> str:
     if get_ffmpeg_path() is None:
         return ""

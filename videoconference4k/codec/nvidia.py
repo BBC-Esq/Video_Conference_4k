@@ -1,3 +1,5 @@
+import functools
+
 import numpy as np
 from typing import Optional
 from numpy.typing import NDArray
@@ -12,11 +14,17 @@ nvc = import_dependency_safe("PyNvVideoCodec", error="silent")
 logger = get_logger("NvidiaCodec")
 
 
-def has_nvidia_codec() -> bool:
+@functools.lru_cache(maxsize=8)
+def has_nvidia_codec(codec: str = "h264") -> bool:
+    """Whether NVENC can encode this codec here, asked of the GPU itself.
+
+    Support is per codec, not per vendor: a Turing card encodes H.264 and HEVC
+    but has no AV1 encoder at all, so one answer for the whole GPU would lie.
+    """
     if nvc is None:
         return False
     try:
-        encoder = nvc.CreateEncoder(256, 256, "NV12", True, codec="h264")
+        encoder = nvc.CreateEncoder(256, 256, "NV12", True, codec=str(codec).lower())
         del encoder
         return True
     except Exception:
