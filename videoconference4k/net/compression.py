@@ -108,6 +108,45 @@ class CompressionHandler:
     def is_nvidia(self) -> bool:
         return self._use_nvidia
 
+    def set_codec(self, codec: str) -> bool:
+        """Switch the codec being sent, re-choosing the implementation for it.
+
+        The best implementation is a property of the codec, not the machine: an
+        integrated GPU may encode H.264 in hardware yet leave HEVC to the CPU,
+        so the ladder is walked again rather than assumed to still hold.
+        """
+        codec = normalize_codec(codec)
+        if codec == normalize_codec(self._gpu_codec):
+            return False
+        if not (self._use_nvidia or self._use_intel or self._use_software):
+            return False
+
+        for encoder_attr in ("_nvidia_encoder", "_intel_encoder", "_software_encoder"):
+            encoder = getattr(self, encoder_attr)
+            if encoder is not None:
+                try:
+                    encoder.close()
+                except Exception:
+                    pass
+                setattr(self, encoder_attr, None)
+
+        self._gpu_codec = codec
+        self._use_nvidia = self._use_intel = self._use_software = False
+
+        if has_nvidia_codec(codec):
+            self._use_nvidia = True
+            self._compression_type = CompressionType.NVENC
+        elif has_intel_codec(codec):
+            self._use_intel = True
+            self._compression_type = CompressionType.INTEL_QSV
+        else:
+            self._use_software = True
+            self._compression_type = CompressionType.SOFTWARE
+
+        self._logging and logger.info(
+            "Now sending {} via {}".format(codec, self._compression_type))
+        return True
+
     @property
     def is_intel(self) -> bool:
         return self._use_intel

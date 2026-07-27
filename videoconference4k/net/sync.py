@@ -123,6 +123,8 @@ class SyncTransport:
         self.__force_local_idr = False
         self.__peer_wants_keyframe = False
         self.__request_keyframe_pending = False
+        self.__local_capabilities = None
+        self.__peer_capabilities = None
         overwrite_cert = False
         custom_cert_location = ""
 
@@ -774,6 +776,9 @@ class SyncTransport:
             wire_pts = msg_json.get("video_pts", 0)
             if msg_json.get("request_keyframe"):
                 self.__peer_wants_keyframe = True
+            announced = msg_json.get("capabilities")
+            if announced:
+                self.__peer_capabilities = announced
             compression_info = msg_json.get("compression")
             if compression_info:
                 self.__rx_pts_fifo.append(wire_pts)
@@ -957,6 +962,7 @@ class SyncTransport:
             ack=needs_ack,
             video_pts=wire_pts,
             request_keyframe=req_kf,
+            capabilities=self.__local_capabilities if needs_ack else None,
         )
 
         self.__msg_socket.send_json(msg_dict, self.__msg_flag | zmq.SNDMORE)
@@ -1113,6 +1119,22 @@ class SyncTransport:
 
     def reconfigure_bitrate(self, bitrate: int, maxbitrate: Any = None) -> bool:
         return self.__compression_handler.reconfigure_bitrate(bitrate, maxbitrate)
+
+    @property
+    def peer_capabilities(self):
+        return self.__peer_capabilities
+
+    def announce_capabilities(self, capabilities) -> None:
+        """Advertise what this machine can handle, carried on the existing header.
+
+        Riding the video stream avoids a second port and a second firewall rule,
+        and because it repeats on the acknowledgement cadence a peer that joins
+        or restarts later still learns it without a dedicated retry.
+        """
+        self.__local_capabilities = capabilities
+
+    def set_codec(self, codec: str) -> bool:
+        return self.__compression_handler.set_codec(codec)
 
     def force_next_keyframe(self) -> None:
         self.__force_local_idr = True

@@ -10,6 +10,8 @@ from ..capture.audio import AudioCapture
 from ..net.sync import SyncTransport
 from ..net.audio import AudioTransport
 from ..net.upnp import UPnPPortMapper
+from ..codec import local_capabilities, choose_send_codec, DEFAULT_PRIORITY
+from ..codec.base import normalize_codec
 from ..utils.common import get_logger, log_version, raise_timer_resolution, restore_timer_resolution
 
 logger = get_logger("DirectConference")
@@ -32,6 +34,7 @@ class DirectConference:
         video_source: Any = None,
         gpu_accelerated: bool = True,
         gpu_codec: str = "h264",
+        codec_priority: Optional[Tuple[str, ...]] = None,
         gpu_bitrate: int = 8000000,
         adaptive_bitrate: bool = True,
         min_bitrate: int = 0,
@@ -145,6 +148,10 @@ class DirectConference:
         self.__frames_source_shed = 0
         self.__want_remote_keyframe = False
 
+        self.__codec_priority = tuple(codec_priority) if codec_priority else DEFAULT_PRIORITY
+        self.__local_caps = local_capabilities()
+        self.__negotiated_codec = normalize_codec(gpu_codec)
+
     @property
     def is_running(self) -> bool:
         return self.__is_running
@@ -213,6 +220,8 @@ class DirectConference:
                 sample_rate=48000, channels=1, bitrate=self.__audio_bitrate, logging=self.__logging,
             )
 
+        self.__send_video.announce_capabilities(self.__local_caps)
+
         self.__terminate.clear()
         self.__want_remote_keyframe = True
         self.__threads = [
@@ -262,10 +271,31 @@ class DirectConference:
                     self.__frames_skipped += 1
                 if interval > 0 and (time.perf_counter() - proc_start) > interval:
                     self.__frames_lagged += 1
+            self.__maybe_negotiate_codec()
             self.__maybe_adapt_bitrate(time.perf_counter())
             wait = interval - (time.perf_counter() - start)
             if wait > 0:
                 self.__terminate.wait(wait)
+
+    def __maybe_negotiate_codec(self) -> None:
+        """Settle this direction's codec once the peer has said what it can decode.
+
+        Runs on the send thread so the encoder is never swapped underneath a
+        frame, and only ever narrows to something the far end can actually read.
+        """
+        if self.__recv_video is None or self.__send_video is None:
+            return
+        remote = self.__recv_video.peer_capabilities
+        if not remote:
+            return
+
+        wanted = choose_send_codec(self.__local_caps, remote, self.__codec_priority)
+        if wanted == self.__negotiated_codec:
+            return
+        if self.__send_video.set_codec(wanted):
+            self.__negotiated_codec = wanted
+            self.__want_remote_keyframe = True
+            logger.info("Negotiated {} for this direction with the peer.".format(wanted))
 
     def _abr_decision(self, drop_frac: float, goodput_bps: float, now: float):
         if drop_frac > self.__abr_drop_threshold:
@@ -438,6 +468,9 @@ class DirectConference:
             "shed_level": self.__shed_level,
             "frames_source_shed": self.__frames_source_shed,
             "capture_failed": bool(getattr(self.__video_source, "capture_failed", False)),
+            "send_codec": self.__negotiated_codec,
+            "peer_capabilities": (self.__recv_video.peer_capabilities
+                                  if self.__recv_video is not None else None),
             "lipsync": self.__lipsync and self.__audio is not None,
         }
 

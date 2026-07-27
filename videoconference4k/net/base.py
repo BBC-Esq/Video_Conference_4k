@@ -212,6 +212,7 @@ def create_frame_message(
     ack: bool = True,
     video_pts: int = 0,
     request_keyframe: bool = False,
+    capabilities: Any = None,
 ) -> Dict[str, Any]:
     msg_dict = {}
 
@@ -229,6 +230,9 @@ def create_frame_message(
         "video_pts": video_pts,
         "request_keyframe": request_keyframe,
     })
+
+    if capabilities:
+        msg_dict["capabilities"] = capabilities
 
     return msg_dict
 
