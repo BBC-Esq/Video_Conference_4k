@@ -155,14 +155,35 @@ UNTESTED = "not testable here"
 NO_ROUTE = "could not run here"
 
 
-def ffmpeg_encoder_works(name):
+def qsv_implementation():
+    """Which Quick Sync runtime ffmpeg actually binds to, and at what API level.
+
+    This is the single most telling line when two machines with the same chip
+    family disagree: oneVPL exposes codecs the legacy Media SDK never did.
+    """
+    text = _run_ffmpeg(["-v", "verbose", "-init_hw_device", "qsv=hw",
+                        "-f", "lavfi", "-i", "nullsrc=s=64x64",
+                        "-frames:v", "1", "-f", "null", "-"], timeout=45)
+    if not text:
+        return None
+    flavour = "oneVPL" if "oneVPL" in text else "legacy Media SDK"
+    # the log also carries a "required implementation version", which is not what loaded
+    version = re.search(r"Initialize MFX session: implementation version is ([\d.]+)", text)
+    if version is None:
+        version = re.search(r"API version is ([\d.]+)", text)
+    if version is None and "MFX" not in text:
+        return None
+    return flavour, version.group(1) if version else "unknown"
+
+
+def ffmpeg_encoder_works(name, extra=None):
     """Actually encode a few frames. Being listed by ffmpeg is not the same as working."""
     import subprocess
     try:
         done = subprocess.run(
             ["ffmpeg", "-hide_banner", "-loglevel", "error",
              "-f", "lavfi", "-i", "testsrc=size=640x480:rate=30",
-             "-frames:v", "5", "-c:v", name, "-f", "null", "-"],
+             "-frames:v", "5", "-c:v", name] + list(extra or []) + ["-f", "null", "-"],
             capture_output=True, text=True, timeout=60)
         if done.returncode == 0:
             return True, ""
@@ -198,6 +219,7 @@ QSV_RUNTIMES = [
     ("libmfxhw64.dll", "legacy Media SDK"),
     ("libvpl.dll", "oneVPL"),
     ("libmfx64.dll", "Media SDK dispatcher"),
+    ("mfxplugin64_hw.dll", "legacy HEVC plugin"),
 ]
 
 
@@ -227,6 +249,16 @@ def report_graphics():
                 ", ".join("{} ({})".format(dll, kind) for dll, kind in runtime)))
         else:
             print("  Quick Sync runtimes: NONE found - update the Intel graphics driver")
+        try:
+            selected = qsv_implementation()
+        except Exception:
+            selected = None
+        if selected:
+            flavour, version = selected
+            print("  ffmpeg binds to:     {}, API {}".format(flavour, version))
+            if flavour != "oneVPL":
+                print("                       oneVPL exposes codecs the old Media SDK does not;")
+                print("                       an Intel driver update usually provides it.")
     return bool(intel), runtime
 
 
@@ -402,12 +434,24 @@ def report_encoders(has_intel_gpu, qsv_runtime, gpu_line):
     report_nvenc(nvidia_name, listed)
 
     if listed:
-        qsv_rows = [(label, NO_ROUTE if verdict == NO_HARDWARE else verdict, detail)
-                    for label, verdict, detail in ffmpeg_codec_support(QSV_CODECS, listed)]
+        qsv_rows = []
+        plugin_rescued = False
+        for label, verdict, detail in ffmpeg_codec_support(QSV_CODECS, listed):
+            if verdict == NO_HARDWARE and label.startswith("HEVC"):
+                retry_ok, _ = ffmpeg_encoder_works("hevc_qsv", ["-load_plugin", "hevc_hw"])
+                if retry_ok:
+                    qsv_rows.append((label, "works with legacy plugin", ""))
+                    plugin_rescued = True
+                    continue
+            qsv_rows.append((label, NO_ROUTE if verdict == NO_HARDWARE else verdict, detail))
         _print_group("Intel Quick Sync{}".format(
             "" if has_intel_gpu else " - no Intel GPU detected"),
             "tested through ffmpeg, the only route this program has to it",
             qsv_rows)
+        if plugin_rescued:
+            print("      HEVC needed the legacy HEVC plugin, which means this machine is")
+            print("      running the old Media SDK rather than oneVPL. Updating the Intel")
+            print("      graphics driver would move it onto oneVPL and remove the need.")
         if any(verdict == NO_ROUTE for _, verdict, _ in qsv_rows):
             print("      A Quick Sync failure cannot separate the chip from the driver or")
             print("      runtime, because ffmpeg is the only way this program reaches it.")
