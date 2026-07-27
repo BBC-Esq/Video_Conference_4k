@@ -29,11 +29,15 @@ from .jpeg import (
 )
 from .capability import (
     KNOWN_CODECS,
+    DEFAULT_CODEC_PRIORITY,
     DEFAULT_PRIORITY,
+    PRIORITY_LABELS,
     can_encode,
     can_decode,
     local_capabilities,
     choose_send_codec,
+    normalize_priority,
+    describe_priority,
     describe,
 )
 from .opus import (
@@ -71,7 +75,11 @@ __all__ = [
     "SoftwareDecoder",
     "has_jpeg_codec",
     "KNOWN_CODECS",
+    "DEFAULT_CODEC_PRIORITY",
     "DEFAULT_PRIORITY",
+    "PRIORITY_LABELS",
+    "normalize_priority",
+    "describe_priority",
     "can_encode",
     "can_decode",
     "local_capabilities",

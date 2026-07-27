@@ -10,7 +10,12 @@ from ..capture.audio import AudioCapture
 from ..net.sync import SyncTransport
 from ..net.audio import AudioTransport
 from ..net.upnp import UPnPPortMapper
-from ..codec import local_capabilities, choose_send_codec, DEFAULT_PRIORITY
+from ..codec import (
+    local_capabilities,
+    choose_send_codec,
+    normalize_priority,
+    describe_priority,
+)
 from ..codec.base import normalize_codec
 from ..utils.common import get_logger, log_version, raise_timer_resolution, restore_timer_resolution
 
@@ -148,7 +153,7 @@ class DirectConference:
         self.__frames_source_shed = 0
         self.__want_remote_keyframe = False
 
-        self.__codec_priority = tuple(codec_priority) if codec_priority else DEFAULT_PRIORITY
+        self.__codec_priority = normalize_priority(codec_priority)
         self.__local_caps = local_capabilities()
         self.__negotiated_codec = normalize_codec(gpu_codec)
 
@@ -159,6 +164,23 @@ class DirectConference:
     @property
     def frames_skipped(self) -> int:
         return self.__frames_skipped
+
+    @property
+    def codec_priority(self) -> tuple:
+        """The order codecs are preferred in, most preferred first."""
+        return self.__codec_priority
+
+    @codec_priority.setter
+    def codec_priority(self, order) -> None:
+        """Replace the preference order, during a call if need be.
+
+        Written as a setting rather than a constant because the order is a user's
+        choice, not the program's: a settings screen assigns whatever ranking the
+        user has arranged and the next negotiation simply follows it.
+        """
+        self.__codec_priority = normalize_priority(order)
+        self.__logging and logger.debug(
+            "Codec priority set to {}".format(describe_priority(self.__codec_priority)))
 
     def start(self) -> "DirectConference":
         if self.__is_running:

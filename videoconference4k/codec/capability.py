@@ -1,6 +1,6 @@
 from typing import Dict, Optional, Sequence
 
-from .base import get_ffmpeg_decoders, normalize_codec
+from .base import CODEC_ALIASES, get_ffmpeg_decoders, normalize_codec
 from .nvidia import has_nvidia_codec
 from .intel import has_intel_codec
 from .software import has_x264, has_x265, has_software_codec
@@ -10,7 +10,17 @@ logger = get_logger("Capability")
 
 KNOWN_CODECS = ("h264", "hevc", "av1")
 
-DEFAULT_PRIORITY = ("h264",)
+# The order a codec is tried in, most preferred first. H.264 leads because it is
+# the most widely supported and the cheapest to decode; HEVC and AV1 follow for
+# the cases where both ends can do better. This is a default, not a rule: it is
+# meant to be replaced wholesale by whatever a user chooses in settings.
+DEFAULT_CODEC_PRIORITY = ("h264", "hevc", "av1")
+
+# Names for each rank, so a settings screen can talk about "first choice"
+# without having to know that the order happens to be stored as a sequence.
+PRIORITY_LABELS = ("first", "second", "third", "fourth", "fifth")
+
+DEFAULT_PRIORITY = DEFAULT_CODEC_PRIORITY
 
 FFMPEG_DECODER_NAMES = {"h264": "h264", "hevc": "hevc", "av1": "av1"}
 
@@ -60,10 +70,41 @@ def local_capabilities(codecs: Sequence[str] = KNOWN_CODECS) -> Dict[str, Dict[s
     return result
 
 
+def normalize_priority(order: Optional[Sequence[str]]) -> tuple:
+    """Turn whatever a caller or a settings screen supplies into a usable order.
+
+    Accepts any spelling of a codec, drops names this build knows nothing about,
+    removes repeats, and appends whatever was left out so the result is always a
+    complete ranking. A user reordering two entries should never quietly delete
+    the third.
+    """
+    ranked = []
+    for name in (order or ()):
+        # match the alias table directly: normalize_codec answers h264 for anything
+        # it does not recognise, which would silently promote a typo to first place
+        key = str(name or "").strip().lower()
+        codec = CODEC_ALIASES.get(key)
+        if codec in KNOWN_CODECS and codec not in ranked:
+            ranked.append(codec)
+    for codec in DEFAULT_CODEC_PRIORITY:
+        if codec not in ranked:
+            ranked.append(codec)
+    return tuple(ranked)
+
+
+def describe_priority(order: Optional[Sequence[str]] = None) -> str:
+    """Render an order the way a settings screen would label it."""
+    ranked = normalize_priority(order if order is not None else DEFAULT_CODEC_PRIORITY)
+    return ", ".join(
+        "{}={}".format(PRIORITY_LABELS[index] if index < len(PRIORITY_LABELS) else index + 1, codec)
+        for index, codec in enumerate(ranked)
+    )
+
+
 def choose_send_codec(
     local: Dict[str, Dict[str, bool]],
     remote: Optional[Dict[str, Dict[str, bool]]],
-    priority: Sequence[str] = DEFAULT_PRIORITY,
+    priority: Sequence[str] = DEFAULT_CODEC_PRIORITY,
     fallback: str = "h264",
 ) -> str:
     """Pick the codec for one direction: what I encode and the far end decodes.
