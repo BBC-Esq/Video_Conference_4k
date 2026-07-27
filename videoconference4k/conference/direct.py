@@ -40,6 +40,7 @@ class DirectConference:
         gpu_accelerated: bool = True,
         gpu_codec: str = "h264",
         codec_priority: Optional[Tuple[str, ...]] = None,
+        prefer_hardware_codec: bool = False,
         gpu_bitrate: int = 8000000,
         adaptive_bitrate: bool = True,
         min_bitrate: int = 0,
@@ -154,6 +155,7 @@ class DirectConference:
         self.__want_remote_keyframe = False
 
         self.__codec_priority = normalize_priority(codec_priority)
+        self.__prefer_hardware_codec = bool(prefer_hardware_codec)
         self.__local_caps = local_capabilities()
         self.__negotiated_codec = normalize_codec(gpu_codec)
 
@@ -181,6 +183,20 @@ class DirectConference:
         self.__codec_priority = normalize_priority(order)
         self.__logging and logger.debug(
             "Codec priority set to {}".format(describe_priority(self.__codec_priority)))
+
+    @property
+    def prefer_hardware_codec(self) -> bool:
+        """Whether a hardware-capable lower choice may outrank a software-only higher one.
+
+        Off by default, so the priority order is honoured exactly as written. Turn
+        it on and a codec this machine can encode in hardware wins over one it
+        would have to encode on the CPU, even if the CPU one ranks higher.
+        """
+        return self.__prefer_hardware_codec
+
+    @prefer_hardware_codec.setter
+    def prefer_hardware_codec(self, value: bool) -> None:
+        self.__prefer_hardware_codec = bool(value)
 
     def start(self) -> "DirectConference":
         if self.__is_running:
@@ -311,7 +327,9 @@ class DirectConference:
         if not remote:
             return
 
-        wanted = choose_send_codec(self.__local_caps, remote, self.__codec_priority)
+        wanted = choose_send_codec(
+            self.__local_caps, remote, self.__codec_priority,
+            prefer_hardware=self.__prefer_hardware_codec)
         if wanted == self.__negotiated_codec:
             return
         if self.__send_video.set_codec(wanted):

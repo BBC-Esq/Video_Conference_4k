@@ -25,18 +25,49 @@ DEFAULT_PRIORITY = DEFAULT_CODEC_PRIORITY
 FFMPEG_DECODER_NAMES = {"h264": "h264", "hevc": "hevc", "av1": "av1"}
 
 
-def can_encode(codec: str) -> bool:
-    """Whether anything on this machine can encode this codec."""
+# Layer 2 vocabulary: how a codec gets encoded here. Deliberately the same
+# strings the wire uses for its type tag, so nothing has to translate.
+IMPL_NVENC = "nvenc"
+IMPL_QSV = "intel_qsv"
+IMPL_SOFTWARE = "software"
+
+HARDWARE_IMPLEMENTATIONS = (IMPL_NVENC, IMPL_QSV)
+
+
+def software_encoder_available(codec: str) -> bool:
+    """Whether a CPU encoder exists for this codec. There is no software AV1 path."""
+    codec = normalize_codec(codec)
+    if codec == "h264":
+        return has_x264()
+    if codec == "hevc":
+        return has_x265()
+    return False
+
+
+def encoder_implementation(codec: str) -> Optional[str]:
+    """The best local way to encode this codec, or None if there is no way at all.
+
+    This is the whole of layer two. Which codec to use is agreed with the far end;
+    how to produce it is nobody else's business, so this is never announced and
+    never negotiated. Hardware first, then the CPU.
+    """
     codec = normalize_codec(codec)
     if has_nvidia_codec(codec):
-        return True
+        return IMPL_NVENC
     if has_intel_codec(codec):
-        return True
-    if codec == "h264" and has_x264():
-        return True
-    if codec == "hevc" and has_x265():
-        return True
-    return False
+        return IMPL_QSV
+    if software_encoder_available(codec):
+        return IMPL_SOFTWARE
+    return None
+
+
+def encoder_is_hardware(codec: str) -> bool:
+    return encoder_implementation(codec) in HARDWARE_IMPLEMENTATIONS
+
+
+def can_encode(codec: str) -> bool:
+    """Whether anything on this machine can encode this codec."""
+    return encoder_implementation(codec) is not None
 
 
 def can_decode(codec: str) -> bool:
@@ -101,29 +132,53 @@ def describe_priority(order: Optional[Sequence[str]] = None) -> str:
     )
 
 
+def _peer_list(remote) -> list:
+    """Accept one peer or many, so the same rule serves a call and a conference."""
+    if not remote:
+        return []
+    if isinstance(remote, dict):
+        return [remote]
+    return [peer for peer in remote if peer]
+
+
 def choose_send_codec(
     local: Dict[str, Dict[str, bool]],
-    remote: Optional[Dict[str, Dict[str, bool]]],
+    remote=None,
     priority: Sequence[str] = DEFAULT_CODEC_PRIORITY,
     fallback: str = "h264",
+    prefer_hardware: bool = False,
 ) -> str:
-    """Pick the codec for one direction: what I encode and the far end decodes.
+    """Pick the codec I will send, given everyone who has to decode it.
 
-    Negotiation is per direction, never symmetric. A peer that can decode a codec
-    it cannot produce is common, so the two directions of a call may legitimately
-    settle on different codecs.
+    One rule covers every case: I must be able to encode it and every receiver
+    must be able to decode it. What the receivers can encode, and what I can
+    decode, are beside the point, which is why hardware that decodes a codec it
+    cannot produce causes no trouble - such a peer simply receives that codec
+    while sending something else back.
+
+    Adding a participant can only narrow the choice, never widen it, so a third
+    caller who cannot decode HEVC quietly forces everyone down to H.264.
     """
-    for candidate in priority:
-        candidate = normalize_codec(candidate)
-        mine = local.get(candidate) or {}
-        if not mine.get("encode"):
+    peers = _peer_list(remote)
+    if not peers:
+        return normalize_codec(fallback)
+
+    usable = []
+    for candidate in normalize_priority(priority):
+        if not (local.get(candidate) or {}).get("encode"):
             continue
-        if remote is None:
-            continue
-        theirs = remote.get(candidate) or {}
-        if theirs.get("decode"):
-            return candidate
-    return normalize_codec(fallback)
+        if all((peer.get(candidate) or {}).get("decode") for peer in peers):
+            usable.append(candidate)
+
+    if not usable:
+        return normalize_codec(fallback)
+
+    if prefer_hardware:
+        accelerated = [codec for codec in usable if encoder_is_hardware(codec)]
+        if accelerated:
+            return accelerated[0]
+
+    return usable[0]
 
 
 def describe(capabilities: Dict[str, Dict[str, bool]]) -> str:

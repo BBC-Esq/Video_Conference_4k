@@ -18,6 +18,7 @@ from ..codec import (
     JpegDecoder,
 )
 from ..codec.base import normalize_codec
+from ..codec.capability import encoder_implementation
 
 simplejpeg = import_dependency_safe("simplejpeg", error="silent", min_version="1.6.1")
 
@@ -76,26 +77,14 @@ class CompressionHandler:
         self._use_jpeg = False
 
         if gpu_accelerated:
-            if has_nvidia_codec():
-                self._use_nvidia = True
-                self._compression_type = CompressionType.NVENC
-                self._logging and logger.info("Encoding with NVIDIA hardware")
-            elif has_intel_codec(gpu_codec):
-                self._use_intel = True
-                self._compression_type = CompressionType.INTEL_QSV
-                self._logging and logger.info(
-                    "No NVENC here; encoding {} with Intel Quick Sync".format(gpu_codec))
-            elif has_x264():
-                self._use_software = True
-                self._compression_type = CompressionType.SOFTWARE
-                logger.warning(
-                    "No hardware encoder available for {}; falling back to the CPU.".format(gpu_codec))
-            elif has_jpeg_codec():
-                self._use_jpeg = True
-                self._compression_type = CompressionType.JPEG
-                logger.warning("No video codec available. Falling back to JPEG compression.")
-            else:
-                logger.warning("No compression codec available.")
+            if not self._select_implementation(gpu_codec):
+                if has_jpeg_codec():
+                    self._use_jpeg = True
+                    self._compression_type = CompressionType.JPEG
+                    logger.warning(
+                        "Nothing here can encode {}; falling back to JPEG.".format(gpu_codec))
+                else:
+                    logger.warning("No compression codec available.")
         elif has_jpeg_codec():
             self._use_jpeg = True
             self._compression_type = CompressionType.JPEG
@@ -107,6 +96,28 @@ class CompressionHandler:
     @property
     def is_nvidia(self) -> bool:
         return self._use_nvidia
+
+    def _select_implementation(self, codec: str) -> bool:
+        """Resolve how this machine will encode the codec. Layer two, decided locally.
+
+        Delegates to the capability module so this ladder and the capability a
+        peer is told about can never disagree; they were separate answers before
+        and the software tier claimed codecs it had no encoder for.
+        """
+        codec = normalize_codec(codec)
+        implementation = encoder_implementation(codec)
+
+        self._use_nvidia = implementation == CompressionType.NVENC
+        self._use_intel = implementation == CompressionType.INTEL_QSV
+        self._use_software = implementation == CompressionType.SOFTWARE
+
+        if implementation is None:
+            return False
+
+        self._gpu_codec = codec
+        self._compression_type = implementation
+        self._logging and logger.info("Encoding {} with {}".format(codec, implementation))
+        return True
 
     def set_codec(self, codec: str) -> bool:
         """Switch the codec being sent, re-choosing the implementation for it.
@@ -120,6 +131,10 @@ class CompressionHandler:
             return False
         if not (self._use_nvidia or self._use_intel or self._use_software):
             return False
+        if encoder_implementation(codec) is None:
+            logger.warning("Asked to send {} but nothing here can encode it; staying on {}."
+                           .format(codec, self._gpu_codec))
+            return False
 
         for encoder_attr in ("_nvidia_encoder", "_intel_encoder", "_software_encoder"):
             encoder = getattr(self, encoder_attr)
@@ -130,22 +145,7 @@ class CompressionHandler:
                     pass
                 setattr(self, encoder_attr, None)
 
-        self._gpu_codec = codec
-        self._use_nvidia = self._use_intel = self._use_software = False
-
-        if has_nvidia_codec(codec):
-            self._use_nvidia = True
-            self._compression_type = CompressionType.NVENC
-        elif has_intel_codec(codec):
-            self._use_intel = True
-            self._compression_type = CompressionType.INTEL_QSV
-        else:
-            self._use_software = True
-            self._compression_type = CompressionType.SOFTWARE
-
-        self._logging and logger.info(
-            "Now sending {} via {}".format(codec, self._compression_type))
-        return True
+        return self._select_implementation(codec)
 
     @property
     def is_intel(self) -> bool:

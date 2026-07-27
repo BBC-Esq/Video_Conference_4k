@@ -39,6 +39,9 @@ from .capability import (
     normalize_priority,
     describe_priority,
     describe,
+    encoder_implementation,
+    encoder_is_hardware,
+    software_encoder_available,
 )
 from .opus import (
     has_opus_codec,
