@@ -12,6 +12,45 @@ def get_ffmpeg_path() -> Optional[str]:
     return shutil.which("ffmpeg")
 
 
+CODEC_ALIASES = {
+    "h264": "h264", "x264": "h264", "avc": "h264", "libx264": "h264",
+    "hevc": "hevc", "h265": "hevc", "x265": "hevc", "libx265": "hevc",
+    "av1": "av1",
+}
+
+
+def normalize_codec(name: Optional[str]) -> str:
+    """Reduce the many spellings of a codec to one canonical name.
+
+    The wire, the encoders and the decoders each use their own vocabulary for
+    the same standard, and conflating them is how a stream ends up handed to a
+    decoder built for something else.
+    """
+    return CODEC_ALIASES.get(str(name or "h264").strip().lower(), "h264")
+
+
+@functools.lru_cache(maxsize=16)
+def ffmpeg_encoder_runs(name: str) -> bool:
+    """Whether this ffmpeg encoder actually runs, rather than merely being listed.
+
+    An encoder can be compiled into ffmpeg while the chip or its runtime refuses
+    it, so the only trustworthy answer comes from encoding a few frames.
+    """
+    if get_ffmpeg_path() is None:
+        return False
+    try:
+        result = subprocess.run(
+            ["ffmpeg", "-hide_banner", "-loglevel", "error",
+             "-f", "lavfi", "-i", "testsrc=size=320x240:rate=30",
+             "-frames:v", "3", "-c:v", name, "-f", "null", "-"],
+            capture_output=True,
+            timeout=60,
+        )
+        return result.returncode == 0
+    except Exception:
+        return False
+
+
 @functools.lru_cache(maxsize=1)
 def get_ffmpeg_encoders() -> str:
     if get_ffmpeg_path() is None:

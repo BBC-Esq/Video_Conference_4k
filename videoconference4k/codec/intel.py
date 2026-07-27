@@ -7,14 +7,26 @@ from .base import (
     FFmpegSyncEncoder,
     get_ffmpeg_path,
     get_ffmpeg_encoders,
+    ffmpeg_encoder_runs,
+    normalize_codec,
 )
 from ..utils.common import get_logger
 
 logger = get_logger("IntelCodec")
 
+QSV_ENCODERS = {"h264": "h264_qsv", "hevc": "hevc_qsv", "av1": "av1_qsv"}
 
-def has_intel_codec() -> bool:
-    return "h264_qsv" in get_ffmpeg_encoders()
+
+def has_intel_codec(codec: str = "h264") -> bool:
+    """Whether Quick Sync can encode this codec on this machine, tested by encoding.
+
+    Support varies per codec on the same chip: an integrated GPU may encode H.264
+    while its runtime refuses HEVC, so asking about the vendor is not enough.
+    """
+    name = QSV_ENCODERS.get(normalize_codec(codec))
+    if not name or name not in get_ffmpeg_encoders():
+        return False
+    return ffmpeg_encoder_runs(name)
 
 
 def get_intel_info() -> dict:

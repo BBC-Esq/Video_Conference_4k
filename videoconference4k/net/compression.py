@@ -5,15 +5,19 @@ from numpy.typing import NDArray
 from ..utils.common import get_logger, import_dependency_safe
 from ..codec import (
     has_nvidia_codec,
+    has_intel_codec,
+    has_software_codec,
     has_x264,
     has_jpeg_codec,
     NvidiaEncoder,
     NvidiaDecoder,
+    IntelEncoder,
     SoftwareEncoder,
     SoftwareDecoder,
     JpegEncoder,
     JpegDecoder,
 )
+from ..codec.base import normalize_codec
 
 simplejpeg = import_dependency_safe("simplejpeg", error="silent", min_version="1.6.1")
 
@@ -22,9 +26,17 @@ logger = get_logger("Compression")
 
 class CompressionType:
     NVENC = "nvenc"
+    INTEL_QSV = "intel_qsv"
     SOFTWARE = "software"
     JPEG = "jpeg"
     NONE = "none"
+
+
+VIDEO_CODEC_TYPES = frozenset((
+    CompressionType.NVENC,
+    CompressionType.INTEL_QSV,
+    CompressionType.SOFTWARE,
+))
 
 
 class CompressionHandler:
@@ -51,14 +63,15 @@ class CompressionHandler:
         self._jpeg_fastupsample = jpeg_fastupsample
 
         self._nvidia_encoder = None
-        self._nvidia_decoder = None
+        self._intel_encoder = None
         self._software_encoder = None
-        self._software_decoder = None
         self._jpeg_encoder = None
         self._jpeg_decoder = None
+        self._video_decoders = {}
 
         self._compression_type = CompressionType.NONE
         self._use_nvidia = False
+        self._use_intel = False
         self._use_software = False
         self._use_jpeg = False
 
@@ -66,16 +79,21 @@ class CompressionHandler:
             if has_nvidia_codec():
                 self._use_nvidia = True
                 self._compression_type = CompressionType.NVENC
-                self._logging and logger.info("GPU acceleration enabled with NVIDIA hardware encoding")
+                self._logging and logger.info("Encoding with NVIDIA hardware")
+            elif has_intel_codec(gpu_codec):
+                self._use_intel = True
+                self._compression_type = CompressionType.INTEL_QSV
+                self._logging and logger.info(
+                    "No NVENC here; encoding {} with Intel Quick Sync".format(gpu_codec))
             elif has_x264():
                 self._use_software = True
                 self._compression_type = CompressionType.SOFTWARE
-                logger.warning("GPU acceleration requested but NVIDIA codec not available. Using software fallback.")
-                self._logging and logger.info("Software acceleration enabled with x264 encoding")
+                logger.warning(
+                    "No hardware encoder available for {}; falling back to the CPU.".format(gpu_codec))
             elif has_jpeg_codec():
                 self._use_jpeg = True
                 self._compression_type = CompressionType.JPEG
-                logger.warning("No hardware or software codec available. Falling back to JPEG compression.")
+                logger.warning("No video codec available. Falling back to JPEG compression.")
             else:
                 logger.warning("No compression codec available.")
         elif has_jpeg_codec():
@@ -91,6 +109,10 @@ class CompressionHandler:
         return self._use_nvidia
 
     @property
+    def is_intel(self) -> bool:
+        return self._use_intel
+
+    @property
     def is_software(self) -> bool:
         return self._use_software
 
@@ -100,7 +122,7 @@ class CompressionHandler:
 
     @property
     def is_enabled(self) -> bool:
-        return self._use_nvidia or self._use_software or self._use_jpeg
+        return self._use_nvidia or self._use_intel or self._use_software or self._use_jpeg
 
     @property
     def supports_dynamic_bitrate(self) -> bool:
@@ -175,14 +197,35 @@ class CompressionHandler:
             )
         return self._nvidia_encoder
 
-    def _get_nvidia_decoder(self) -> NvidiaDecoder:
-        if self._nvidia_decoder is None:
-            self._nvidia_decoder = NvidiaDecoder(
-                gpu_id=self._gpu_id,
-                codec=self._gpu_codec,
-                logging=self._logging,
-            )
-        return self._nvidia_decoder
+    def _get_video_decoder(self, codec: Optional[str]):
+        """Choose a decoder for the codec on the wire, preferring hardware.
+
+        An encoded stream is a standard, not an implementation. Whatever produced
+        it - NVENC, Quick Sync or a CPU - any conformant decoder can read it, so
+        the choice belongs to the receiver and depends only on the codec.
+        """
+        codec = normalize_codec(codec)
+        if codec in self._video_decoders:
+            return self._video_decoders[codec]
+
+        decoder = None
+        if has_nvidia_codec():
+            try:
+                decoder = NvidiaDecoder(gpu_id=self._gpu_id, codec=codec, logging=self._logging)
+            except Exception as exc:
+                logger.warning(
+                    "NVDEC could not be opened for {} ({}); using the software decoder.".format(
+                        codec, exc))
+                decoder = None
+
+        if decoder is None and has_software_codec():
+            decoder = SoftwareDecoder(codec=codec, logging=self._logging)
+
+        if decoder is None:
+            logger.error("No decoder available for {} on this machine.".format(codec))
+
+        self._video_decoders[codec] = decoder
+        return decoder
 
     def _get_software_encoder(self, width: int, height: int) -> SoftwareEncoder:
         if self._software_encoder is not None and (
@@ -201,14 +244,21 @@ class CompressionHandler:
             )
         return self._software_encoder
 
-    def _get_software_decoder(self) -> SoftwareDecoder:
-        if self._software_decoder is None:
-            codec = "x264" if self._gpu_codec in ["h264", "x264"] else "x265"
-            self._software_decoder = SoftwareDecoder(
-                codec=codec,
+    def _get_intel_encoder(self, width: int, height: int) -> IntelEncoder:
+        if self._intel_encoder is not None and (
+            self._intel_encoder.width != width or self._intel_encoder.height != height
+        ):
+            self._intel_encoder.close()
+            self._intel_encoder = None
+        if self._intel_encoder is None:
+            self._intel_encoder = IntelEncoder(
+                width=width,
+                height=height,
+                bitrate=self._gpu_bitrate,
+                codec=normalize_codec(self._gpu_codec),
                 logging=self._logging,
             )
-        return self._software_decoder
+        return self._intel_encoder
 
     def _get_jpeg_encoder(self, width: int, height: int) -> JpegEncoder:
         if self._jpeg_encoder is not None and (
@@ -254,12 +304,23 @@ class CompressionHandler:
             }
             return encoded, metadata
 
+        elif self._use_intel:
+            encoder = self._get_intel_encoder(width, height)
+            encoded = encoder.encode(frame)
+            metadata = {
+                "type": CompressionType.INTEL_QSV,
+                "codec": normalize_codec(self._gpu_codec),
+                "width": width,
+                "height": height,
+            }
+            return encoded, metadata
+
         elif self._use_software:
             encoder = self._get_software_encoder(width, height)
             encoded = encoder.encode(frame)
             metadata = {
                 "type": CompressionType.SOFTWARE,
-                "codec": self._gpu_codec,
+                "codec": normalize_codec(self._gpu_codec),
                 "width": width,
                 "height": height,
             }
@@ -281,16 +342,10 @@ class CompressionHandler:
     def decode_frame(self, data: bytes, metadata: Dict[str, Any]) -> Optional[NDArray]:
         compression_type = metadata.get("type", CompressionType.NONE)
 
-        if compression_type == CompressionType.NVENC:
-            decoder = self._get_nvidia_decoder()
-            return decoder.decode(
-                data,
-                width=metadata.get("width"),
-                height=metadata.get("height"),
-            )
-
-        elif compression_type == CompressionType.SOFTWARE:
-            decoder = self._get_software_decoder()
+        if compression_type in VIDEO_CODEC_TYPES:
+            decoder = self._get_video_decoder(metadata.get("codec"))
+            if decoder is None:
+                return None
             return decoder.decode(
                 data,
                 width=metadata.get("width"),
@@ -317,12 +372,17 @@ class CompressionHandler:
         if self._use_nvidia:
             return {
                 "type": CompressionType.NVENC,
-                "codec": self._gpu_codec,
+                "codec": normalize_codec(self._gpu_codec),
+            }
+        elif self._use_intel:
+            return {
+                "type": CompressionType.INTEL_QSV,
+                "codec": normalize_codec(self._gpu_codec),
             }
         elif self._use_software:
             return {
                 "type": CompressionType.SOFTWARE,
-                "codec": self._gpu_codec,
+                "codec": normalize_codec(self._gpu_codec),
             }
         elif self._use_jpeg:
             return {
@@ -337,17 +397,21 @@ class CompressionHandler:
             self._nvidia_encoder.close()
             self._nvidia_encoder = None
 
-        if self._nvidia_decoder is not None:
-            self._nvidia_decoder.close()
-            self._nvidia_decoder = None
+        for decoder in self._video_decoders.values():
+            if decoder is not None:
+                try:
+                    decoder.close()
+                except Exception:
+                    pass
+        self._video_decoders = {}
+
+        if self._intel_encoder is not None:
+            self._intel_encoder.close()
+            self._intel_encoder = None
 
         if self._software_encoder is not None:
             self._software_encoder.close()
             self._software_encoder = None
-
-        if self._software_decoder is not None:
-            self._software_decoder.close()
-            self._software_decoder = None
 
         if self._jpeg_encoder is not None:
             self._jpeg_encoder.close()
