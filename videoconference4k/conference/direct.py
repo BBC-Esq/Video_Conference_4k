@@ -509,6 +509,12 @@ class DirectConference:
             "frames_source_shed": self.__frames_source_shed,
             "capture_failed": bool(getattr(self.__video_source, "capture_failed", False)),
             "send_codec": self.__negotiated_codec,
+            "send_impl": (self.__send_video.encoder_kind
+                          if self.__send_video is not None else None),
+            "recv_codec": (self.__recv_video.decoder_codec
+                           if self.__recv_video is not None else None),
+            "recv_impl": (self.__recv_video.decoder_kind
+                          if self.__recv_video is not None else None),
             "peer_capabilities": (self.__recv_video.peer_capabilities
                                   if self.__recv_video is not None else None),
             "lipsync": self.__lipsync and self.__audio is not None,

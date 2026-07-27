@@ -69,6 +69,7 @@ class CompressionHandler:
         self._jpeg_encoder = None
         self._jpeg_decoder = None
         self._video_decoders = {}
+        self._last_decoded_codec = None
 
         self._compression_type = CompressionType.NONE
         self._use_nvidia = False
@@ -146,6 +147,26 @@ class CompressionHandler:
                 setattr(self, encoder_attr, None)
 
         return self._select_implementation(codec)
+
+    @property
+    def encoder_kind(self) -> str:
+        """Which implementation is producing frames here, for display and diagnosis."""
+        return self._compression_type
+
+    @property
+    def decoder_codec(self) -> Optional[str]:
+        """The codec last seen arriving, which is the peer's choice rather than ours."""
+        return self._last_decoded_codec
+
+    @property
+    def decoder_kind(self) -> Optional[str]:
+        """Which decoder this machine picked for what is arriving."""
+        decoder = self._video_decoders.get(self._last_decoded_codec)
+        if decoder is not None:
+            return type(decoder).__name__
+        if self._jpeg_decoder is not None:
+            return type(self._jpeg_decoder).__name__
+        return None
 
     @property
     def is_intel(self) -> bool:
@@ -382,6 +403,7 @@ class CompressionHandler:
         compression_type = metadata.get("type", CompressionType.NONE)
 
         if compression_type in VIDEO_CODEC_TYPES:
+            self._last_decoded_codec = normalize_codec(metadata.get("codec"))
             decoder = self._get_video_decoder(metadata.get("codec"))
             if decoder is None:
                 return None

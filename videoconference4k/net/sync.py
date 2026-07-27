@@ -1124,6 +1124,18 @@ class SyncTransport:
     def peer_capabilities(self):
         return self.__peer_capabilities
 
+    @property
+    def encoder_kind(self):
+        return self.__compression_handler.encoder_kind
+
+    @property
+    def decoder_codec(self):
+        return self.__compression_handler.decoder_codec
+
+    @property
+    def decoder_kind(self):
+        return self.__compression_handler.decoder_kind
+
     def announce_capabilities(self, capabilities) -> None:
         """Advertise what this machine can handle, carried on the existing header.
 

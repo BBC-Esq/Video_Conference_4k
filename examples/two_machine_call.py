@@ -40,6 +40,36 @@ PRESETS = {
 PRESET_ALIASES = {"hd60": "1080p60", "uhd30": "4k30"}
 
 
+FRIENDLY_IMPL = {
+    "nvenc": "NVENC (NVIDIA)",
+    "intel_qsv": "Quick Sync (Intel)",
+    "software": "CPU",
+    "jpeg": "JPEG",
+    "none": "raw",
+    "NvidiaDecoder": "NVDEC (NVIDIA)",
+    "SoftwareDecoder": "CPU",
+    "JpegDecoder": "JPEG",
+}
+
+
+def friendly(name):
+    if not name:
+        return "-"
+    return FRIENDLY_IMPL.get(name, name)
+
+
+def summarise_capabilities(capabilities):
+    """Render a peer's advertised capability the way the preflight does."""
+    if not capabilities:
+        return "not received yet"
+    parts = []
+    for codec in ("h264", "hevc", "av1"):
+        entry = capabilities.get(codec) or {}
+        flags = ("E" if entry.get("encode") else "-") + ("D" if entry.get("decode") else "-")
+        parts.append("{} {}".format(codec, flags))
+    return "   ".join(parts)
+
+
 def lan_address():
     probe = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     try:
@@ -702,6 +732,9 @@ def run_call(args):
                 camera_id=args.camera,
                 microphone_id=args.mic,
                 speaker_id=args.speaker,
+                codec_priority=(tuple(p.strip() for p in args.codec_priority.split(","))
+                                if args.codec_priority else None),
+                prefer_hardware_codec=args.prefer_hardware,
                 enable_audio=not args.no_audio,
                 logging=args.verbose,
                 **cfg
@@ -771,19 +804,26 @@ def run_call(args):
             else:
                 first = "{:.1f} s after start".format(self.first_remote_at)
 
+            handshake = "agreed" if stats["peer_capabilities"] else "waiting for peer"
+
             lines = [
-                "preset {}   {}x{}@{}   {}   audio {}".format(
+                "preset {}   {}x{}@{}   audio {}   handshake: {}".format(
                     args.preset, cfg["resolution"][0], cfg["resolution"][1], cfg["framerate"],
-                    "hardware" if cfg["gpu_accelerated"] else "jpeg",
-                    "off" if args.no_audio else "on"),
-                "send  {:6.1f} fps   {:8.0f} kbps   target {:5.1f} Mbps   first remote frame: {}".format(
-                    send_fps, stats["send_kbps"], stats["target_bitrate"] / 1e6, first),
-                "recv  {:6.1f} fps   hold {:3d}   lipsync {}   camera {}".format(
-                    recv_fps, stats["video_hold_depth"],
+                    "off" if args.no_audio else "on", handshake),
+                "",
+                "SENDING     {:<6} encoded by {:<20}  {:6.1f} fps  {:7.0f} kbps  target {:.1f} Mbps".format(
+                    stats["send_codec"] or "-", friendly(stats["send_impl"]),
+                    send_fps, stats["send_kbps"], stats["target_bitrate"] / 1e6),
+                "RECEIVING   {:<6} decoded by {:<20}  {:6.1f} fps  hold {:3d}   first frame: {}".format(
+                    stats["recv_codec"] or "-", friendly(stats["recv_impl"]),
+                    recv_fps, stats["video_hold_depth"], first),
+                "peer can    {}".format(summarise_capabilities(stats["peer_capabilities"])),
+                "my order    {}".format(", ".join(self.conf.codec_priority)),
+                "",
+                "health   lipsync {}   camera {}   pipe {}   shed lvl {} ({} frames)   "
+                "lagged {}   late {}   dup {}   reconnects {}".format(
                     "on" if stats["lipsync"] else "off",
-                    "FAILED" if stats["capture_failed"] else "ok"),
-                "loss  pipe {:5d}   shed lvl {} ({} frames)   lagged {:5d}   "
-                "late/stale {:5d}   dup {:5d}   reconnects {}".format(
+                    "FAILED" if stats["capture_failed"] else "ok",
                     stats["pipe_dropped"], stats["shed_level"], stats["frames_source_shed"],
                     stats["frames_lagged"], stats["frames_dropped"], stats["frames_skipped"],
                     stats["reconnects"]),
@@ -827,6 +867,10 @@ def main():
     parser.add_argument("--no-gpu", action="store_true")
     parser.add_argument("--fixed-bitrate", action="store_true",
                         help="disable adaptive bitrate, to tell encoder limits from link limits")
+    parser.add_argument("--codec-priority", default=None,
+                        help="preference order, most preferred first, e.g. hevc,h264")
+    parser.add_argument("--prefer-hardware", action="store_true",
+                        help="let a hardware codec outrank a higher-priority software-only one")
     parser.add_argument("--verbose", action="store_true")
     args = parser.parse_args()
     args.preset = PRESET_ALIASES.get(args.preset, args.preset)
