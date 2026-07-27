@@ -89,6 +89,43 @@ def bgr_to_nv12(bgr_frame: NDArray) -> NDArray:
     return bgr_to_nv12_into(bgr_frame, i420, nv12)
 
 
+IVF_SIGNATURE = b"DKIF"
+
+
+def strip_ivf_container(data: bytes) -> bytes:
+    """Unwrap AV1 output from the IVF container PyNvVideoCodec emits.
+
+    H.264 and HEVC come out of the encoder as raw elementary streams, but AV1
+    arrives wrapped in IVF: a 32-byte file header, then a 12-byte size and
+    timestamp before every frame. The decoder and the transport both expect an
+    elementary stream, so the framing is removed here rather than understood in
+    three other places.
+    """
+    if not data:
+        return data
+
+    offset = 0
+    if data[:4] == IVF_SIGNATURE:
+        if len(data) < 8:
+            return b""
+        offset = int.from_bytes(data[6:8], "little") or 32
+
+    if offset == 0 and len(data) >= 12:
+        declared = int.from_bytes(data[0:4], "little")
+        if declared == 0 or declared + 12 > len(data):
+            return data
+
+    out = bytearray()
+    while offset + 12 <= len(data):
+        size = int.from_bytes(data[offset:offset + 4], "little")
+        offset += 12
+        if size <= 0 or offset + size > len(data):
+            break
+        out += data[offset:offset + size]
+        offset += size
+    return bytes(out) if out else data
+
+
 def _decoded_frame_to_ndarray(frame) -> Optional[NDArray]:
     try:
         return np.from_dlpack(frame)
@@ -268,9 +305,10 @@ class NvidiaEncoder(BaseEncoder):
 
         if encoded_packets:
             if isinstance(encoded_packets, list):
-                return b''.join(bytes(pkt) for pkt in encoded_packets)
+                data = b''.join(bytes(pkt) for pkt in encoded_packets)
             else:
-                return bytes(encoded_packets)
+                data = bytes(encoded_packets)
+            return strip_ivf_container(data) if self._codec.lower() == "av1" else data
 
         return b''
 
@@ -285,9 +323,10 @@ class NvidiaEncoder(BaseEncoder):
             return b''
         if flushed:
             if isinstance(flushed, list):
-                return b''.join(bytes(pkt) for pkt in flushed)
+                data = b''.join(bytes(pkt) for pkt in flushed)
             else:
-                return bytes(flushed)
+                data = bytes(flushed)
+            return strip_ivf_container(data) if self._codec.lower() == "av1" else data
         return b''
 
     def close(self) -> None:
