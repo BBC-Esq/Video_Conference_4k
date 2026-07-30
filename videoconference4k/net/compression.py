@@ -198,6 +198,24 @@ class CompressionHandler:
         return None
 
     @property
+    def encoder_alive(self) -> bool:
+        """Whether the active encoder is still able to produce frames.
+
+        A pipe encoder whose subprocess has exited keeps accepting frames and
+        returning nothing, which looks exactly like a black picture unless the
+        condition is reported.
+        """
+        encoder = self.active_encoder
+        if encoder is None:
+            return True
+        return getattr(encoder, "is_alive", True)
+
+    @property
+    def encoder_error(self) -> str:
+        encoder = self.active_encoder
+        return getattr(encoder, "last_error", "") if encoder is not None else ""
+
+    @property
     def supports_force_idr(self) -> bool:
         """Whether a keyframe request reaching this machine can actually be honoured.
 

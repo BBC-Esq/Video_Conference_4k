@@ -129,6 +129,14 @@ class DirectConference:
         self.__frames_skipped = 0
         self.__frames_dropped = 0
         self.__frames_lagged = 0
+        self.__frames_received = 0
+        self.__last_recv_at = None
+        self.__audio_chunks_received = 0
+        self.__last_audio_recv_at = None
+        self.__decode_gaps = 0
+        self.__stats_prev_recv = 0
+        self.__stats_prev_recv_time = None
+        self.__recv_fps = 0.0
         self.__stats_prev_bytes = 0
         self.__stats_prev_time = None
         self.__stats_lock = threading.Lock()
@@ -221,6 +229,14 @@ class DirectConference:
         self.__frames_skipped = 0
         self.__frames_dropped = 0
         self.__frames_lagged = 0
+        self.__frames_received = 0
+        self.__last_recv_at = None
+        self.__audio_chunks_received = 0
+        self.__last_audio_recv_at = None
+        self.__decode_gaps = 0
+        self.__stats_prev_recv = 0
+        self.__stats_prev_recv_time = None
+        self.__recv_fps = 0.0
         self.__frames_source_shed = 0
         with self.__stats_lock:
             self.__stats_prev_bytes = 0
@@ -469,6 +485,8 @@ class DirectConference:
                 break
             if frame is None:
                 break
+            self.__frames_received += 1
+            self.__last_recv_at = time.perf_counter()
             if self.__recv_video.consume_keyframe_request() and self.__send_video is not None:
                 self.__send_video.force_next_keyframe()
             pts_ns = self.__recv_video.last_video_pts
@@ -496,6 +514,8 @@ class DirectConference:
             received = self.__recv_audio.recv()
             if received is not None:
                 chunk, pts_ns = received
+                self.__audio_chunks_received += 1
+                self.__last_audio_recv_at = time.perf_counter()
                 self.__audio.write_timed(chunk, pts_ns)
             else:
                 self.__terminate.wait(0.005)
@@ -553,6 +573,19 @@ class DirectConference:
             self.__stats_prev_time = now
             self.__stats_prev_bytes = bytes_sent
 
+            frames_received = self.__frames_received
+            if self.__stats_prev_recv_time is not None:
+                elapsed = now - self.__stats_prev_recv_time
+                if elapsed > 0:
+                    self.__recv_fps = (frames_received - self.__stats_prev_recv) / elapsed
+            self.__stats_prev_recv_time = now
+            self.__stats_prev_recv = frames_received
+
+        last_video = self.__last_recv_at
+        last_audio = self.__last_audio_recv_at
+        video_silent_s = (now - last_video) if last_video is not None else None
+        audio_silent_s = (now - last_audio) if last_audio is not None else None
+
         return {
             "audio_playout_pts_ns": self.__audio.playout_pts_ns() if self.__audio is not None else None,
             "video_hold_depth": hold_depth,
@@ -577,6 +610,10 @@ class DirectConference:
                                 and self.__send_video.peer_latency_ms is not None else None),
             "acks_lost": (self.__send_video.acks_lost
                           if self.__send_video is not None else 0),
+            "encoder_alive": (self.__send_video.encoder_alive
+                              if self.__send_video is not None else True),
+            "encoder_error": (self.__send_video.encoder_error
+                              if self.__send_video is not None else ""),
             "can_force_keyframe": (self.__send_video.supports_force_idr
                                    if self.__send_video is not None else None),
             "keyframe_requests_unmet": (self.__send_video.keyframe_requests_unmet
@@ -587,6 +624,21 @@ class DirectConference:
                           if self.__recv_video is not None else None),
             "peer_capabilities": (self.__recv_video.peer_capabilities
                                   if self.__recv_video is not None else None),
+            "frames_received": self.__frames_received,
+            "recv_fps": round(self.__recv_fps, 1),
+            "video_silent_s": (round(video_silent_s, 2)
+                               if video_silent_s is not None else None),
+            "receiving_video": bool(video_silent_s is not None and video_silent_s < 2.0),
+            "audio_chunks_received": self.__audio_chunks_received,
+            "audio_silent_s": (round(audio_silent_s, 2)
+                               if audio_silent_s is not None else None),
+            "receiving_audio": bool(audio_silent_s is not None and audio_silent_s < 2.0),
+            "audio_jitter_depth_ms": (self.__audio.jitter_depth_ms()
+                                      if self.__audio is not None else None),
+            "audio_underruns": (self.__audio.jitter_underruns()
+                                if self.__audio is not None else 0),
+            "audio_callback_drops": (self.__audio.callback_drops
+                                     if self.__audio is not None else 0),
             "lipsync": self.__lipsync and self.__audio is not None,
         }
 

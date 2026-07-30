@@ -3,6 +3,7 @@ import shutil
 import subprocess
 import threading
 from abc import ABC, abstractmethod
+from collections import deque
 from typing import Optional
 from numpy.typing import NDArray
 
@@ -187,6 +188,8 @@ class FFmpegPipeEncoder(BaseEncoder):
         self._out_lock = threading.Lock()
         self._stdout_thread = None
         self._stderr_thread = None
+        self._stderr_tail = deque(maxlen=20)
+        self._death_reported = False
 
     @property
     def width(self) -> int:
@@ -249,11 +252,29 @@ class FFmpegPipeEncoder(BaseEncoder):
             pass
 
     def _drain_stderr(self, stream) -> None:
+        """Keep the last few lines, which are what explain an encoder that dies."""
         try:
-            while stream.read1(65536):
-                pass
+            pending = b""
+            while True:
+                chunk = stream.read1(65536)
+                if not chunk:
+                    break
+                pending += chunk
+                *lines, pending = pending.split(b"\n")
+                for line in lines:
+                    text = line.decode("utf-8", "replace").strip()
+                    if text:
+                        self._stderr_tail.append(text)
         except Exception:
             pass
+
+    @property
+    def is_alive(self) -> bool:
+        return self._process is not None and self._process.poll() is None
+
+    @property
+    def last_error(self) -> str:
+        return " | ".join(self._stderr_tail)
 
     def encode(self, bgr_frame: NDArray, force_idr: bool = False) -> bytes:
         """Encode one frame.
@@ -266,6 +287,14 @@ class FFmpegPipeEncoder(BaseEncoder):
         import cv2
 
         if self._process is None or self._process.poll() is not None:
+            if self._process is not None and not self._death_reported:
+                self._death_reported = True
+                self._logger.error(
+                    "{} encoder exited with code {}; no further frames will be "
+                    "produced. Last output: {}".format(
+                        self._codec_type_str, self._process.poll(), self.last_error or "none"
+                    )
+                )
             return b''
 
         if bgr_frame.shape[1] != self._width or bgr_frame.shape[0] != self._height:

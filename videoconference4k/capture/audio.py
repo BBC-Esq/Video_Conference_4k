@@ -122,6 +122,19 @@ class AudioCapture:
         with self.__jitter_lock:
             return self.__jitter.playout_pts_ns
 
+    def jitter_depth_ms(self) -> Optional[float]:
+        if self.__jitter is None:
+            return None
+        with self.__jitter_lock:
+            return round(self.__jitter.depth_ms, 1)
+
+    def jitter_underruns(self) -> int:
+        """Playback callbacks that were served silence because audio had not arrived."""
+        if self.__jitter is None:
+            return 0
+        with self.__jitter_lock:
+            return self.__jitter.underruns
+
     @staticmethod
     def get_devices() -> dict:
         """Enumerate audio devices, naming the host API each one belongs to.

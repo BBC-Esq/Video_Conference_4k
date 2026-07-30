@@ -1276,6 +1276,14 @@ class SyncTransport:
         return self.__acks_lost
 
     @property
+    def encoder_alive(self) -> bool:
+        return self.__compression_handler.encoder_alive
+
+    @property
+    def encoder_error(self) -> str:
+        return self.__compression_handler.encoder_error
+
+    @property
     def supports_force_idr(self) -> bool:
         return self.__compression_handler.supports_force_idr
 

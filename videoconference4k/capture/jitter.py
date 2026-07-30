@@ -23,6 +23,8 @@ class JitterBuffer:
         self._buf_start = 0
         self._buf = np.zeros((0, self._ch), self._dtype)
         self._primed = False
+        self._underruns = 0
+        self._underrun_samples = 0
 
     @property
     def sample_rate(self) -> int:
@@ -113,6 +115,15 @@ class JitterBuffer:
 
         self._place(pcm, idx)
 
+    @property
+    def underruns(self) -> int:
+        """How many playback callbacks were served silence for want of audio."""
+        return self._underruns
+
+    @property
+    def underrun_samples(self) -> int:
+        return self._underrun_samples
+
     def pop(self, n: int) -> NDArray:
         out = np.zeros((n, self._ch), self._dtype)
         if self._base_ts is None:
@@ -135,6 +146,9 @@ class JitterBuffer:
         take = min(n, max(0, available))
         if take > 0:
             out[:take] = self._buf[local:local + take]
+        if take < n:
+            self._underruns += 1
+            self._underrun_samples += (n - take)
 
         self._play_idx += n
 
