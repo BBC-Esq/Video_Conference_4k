@@ -511,6 +511,11 @@ class DirectConference:
             "send_codec": self.__negotiated_codec,
             "send_impl": (self.__send_video.encoder_kind
                           if self.__send_video is not None else None),
+            "peer_latency_ms": (round(self.__send_video.peer_latency_ms, 1)
+                                if self.__send_video is not None
+                                and self.__send_video.peer_latency_ms is not None else None),
+            "acks_lost": (self.__send_video.acks_lost
+                          if self.__send_video is not None else 0),
             "can_force_keyframe": (self.__send_video.supports_force_idr
                                    if self.__send_video is not None else None),
             "keyframe_requests_unmet": (self.__send_video.keyframe_requests_unmet

@@ -1,4 +1,5 @@
 import os
+import json
 import time
 import asyncio
 import platform
@@ -109,6 +110,11 @@ class SyncTransport:
         self.__queue_size = 8
         self.__ack_interval = 30
         self.__frames_since_ack = 0
+        self.__ack_seq = 0
+        self.__ack_sent_at = {}
+        self.__ack_deadline = None
+        self.__peer_latency_ms = None
+        self.__acks_lost = 0
         self.__pts_fifo = deque()
         self.__pts_fifo_max = 16
         self.__last_video_pts = 0
@@ -770,7 +776,11 @@ class SyncTransport:
                         )
                         self.__msg_socket.send_json(return_dict, self.__msg_flag)
                 elif msg_json.get("ack", True):
-                    self.__msg_socket.send_string("Data received on device: {} !".format(self.__id))
+                    self.__msg_socket.send_json({
+                        "device": self.__id,
+                        "ack_seq": msg_json.get("ack_seq", 0),
+                        "recv_ns": time.perf_counter_ns(),
+                    })
             else:
                 with self.__return_data_lock:
                     local_return_data = self.__return_data
@@ -954,6 +964,11 @@ class SyncTransport:
 
         req_kf = bool(request_keyframe) or self.__request_keyframe_pending
 
+        ack_seq = 0
+        if needs_ack:
+            self.__ack_seq += 1
+            ack_seq = self.__ack_seq
+
         msg_dict = create_frame_message(
             terminate_flag=False,
             compression=metadata if self.__compression_handler.is_enabled else False,
@@ -967,6 +982,7 @@ class SyncTransport:
             video_pts=wire_pts,
             request_keyframe=req_kf,
             capabilities=self.__local_capabilities if needs_ack else None,
+            ack_seq=ack_seq,
         )
 
         self.__msg_socket.send_json(msg_dict, self.__msg_flag | zmq.SNDMORE)
@@ -1054,6 +1070,49 @@ class SyncTransport:
                     recvd_data = recv_json["data"]
 
                 return (recv_json["port"], recvd_data) if self.__multiclient_mode else recvd_data
+            elif self.__pattern == 0:
+                if needs_ack:
+                    self.__frames_since_ack = 0
+                    self.__ack_sent_at[ack_seq] = time.perf_counter_ns()
+                    if self.__ack_deadline is None:
+                        self.__ack_deadline = (
+                            time.monotonic() + self.__request_timeout / 1000.0
+                        )
+
+                if self.__collect_acks():
+                    return None
+
+                if self.__ack_deadline is None or time.monotonic() < self.__ack_deadline:
+                    return None
+
+                logger.critical("No response from Client, Reconnecting again...")
+                self.__reset_ack_tracking()
+                self.__msg_socket.setsockopt(zmq.LINGER, 0)
+                self.__msg_socket.close()
+                self.__poll.unregister(self.__msg_socket)
+                self.__max_retries -= 1
+                self.__reconnects += 1
+
+                if not self.__max_retries:
+                    logger.error("Client failed to respond on repeated attempts.")
+                    self.__terminate.set()
+                    raise RuntimeError("[SyncTransport:ERROR] :: Client seems to be offline, Abandoning!")
+
+                self.__msg_socket = self.__msg_context.socket(self.__msg_pattern)
+                apply_socket_qos(self.__msg_socket, self.__dscp)
+                if self.__ssh_tunnel_mode:
+                    ssh.tunnel_connection(
+                        self.__msg_socket,
+                        self.__connection_address,
+                        self.__ssh_tunnel_mode,
+                        keyfile=self.__ssh_tunnel_keyfile,
+                        password=self.__ssh_tunnel_pwd,
+                        paramiko=self.__paramiko_present,
+                    )
+                else:
+                    self.__msg_socket.connect(self.__connection_address)
+                self.__poll.register(self.__msg_socket, zmq.POLLIN)
+                return None
             else:
                 if not needs_ack:
                     return None
@@ -1063,11 +1122,6 @@ class SyncTransport:
                 if socks.get(self.__msg_socket) == zmq.POLLIN:
                     recv_confirmation = self.__msg_socket.recv()
                     self.__max_retries = self.__retry_budget
-                    while self.__pattern == 0:
-                        try:
-                            self.__msg_socket.recv(flags=zmq.NOBLOCK)
-                        except zmq.Again:
-                            break
                 else:
                     logger.critical("No response from Client, Reconnecting again...")
                     self.__msg_socket.setsockopt(zmq.LINGER, 0)
@@ -1153,6 +1207,73 @@ class SyncTransport:
 
     def set_codec(self, codec: str) -> bool:
         return self.__compression_handler.set_codec(codec)
+
+    def __reset_ack_tracking(self) -> None:
+        self.__ack_sent_at.clear()
+        self.__ack_deadline = None
+
+    def __collect_acks(self) -> bool:
+        """Take whatever acknowledgements have arrived without waiting for any.
+
+        Waiting here is what used to cost a whole round trip every ack interval.
+        Each one that comes back carries the sequence it answers, which turns the
+        acknowledgement into a round-trip measurement instead of a bare pulse.
+        """
+        got_one = False
+
+        while True:
+            try:
+                raw = self.__msg_socket.recv(flags=zmq.NOBLOCK)
+            except zmq.Again:
+                break
+            except zmq.ZMQError:
+                break
+
+            got_one = True
+            seq = None
+            try:
+                seq = json.loads(raw.decode("utf-8")).get("ack_seq")
+            except Exception:
+                seq = None
+
+            if seq is not None:
+                sent_at = self.__ack_sent_at.pop(seq, None)
+                if sent_at is not None:
+                    sample = (time.perf_counter_ns() - sent_at) / 1e6
+                    self.__peer_latency_ms = (
+                        sample if self.__peer_latency_ms is None
+                        else self.__peer_latency_ms * 0.8 + sample * 0.2
+                    )
+                for stale in [k for k in self.__ack_sent_at if k < seq]:
+                    del self.__ack_sent_at[stale]
+                    self.__acks_lost += 1
+            else:
+                self.__ack_sent_at.clear()
+
+        if got_one:
+            self.__max_retries = self.__retry_budget
+
+        if not self.__ack_sent_at:
+            self.__ack_deadline = None
+        elif got_one:
+            self.__ack_deadline = time.monotonic() + self.__request_timeout / 1000.0
+
+        return got_one
+
+    @property
+    def peer_latency_ms(self) -> Optional[float]:
+        """Smoothed time from sending a frame to the peer acknowledging it.
+
+        This is not pure wire time: the peer answers from its receive handler,
+        which stalls while the application is behind on draining frames. The
+        queueing it therefore includes is the useful part, since a rising value
+        means the far end is falling behind before any frame is dropped.
+        """
+        return self.__peer_latency_ms
+
+    @property
+    def acks_lost(self) -> int:
+        return self.__acks_lost
 
     @property
     def supports_force_idr(self) -> bool:
