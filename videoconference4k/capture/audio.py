@@ -19,6 +19,8 @@ logger = get_logger("AudioCapture")
 
 T = TypeVar("T", bound="AudioCapture")
 
+ROOM_REVERB_ALLOWANCE_MS = 80.0
+
 
 class AudioCapture:
 
@@ -34,7 +36,7 @@ class AudioCapture:
         enable_output: bool = True,
         output_jitter_ms: float = 0.0,
         echo_cancellation: bool = True,
-        echo_tail_ms: float = 120.0,
+        echo_tail_ms: Optional[float] = None,
         logging: bool = False,
         **options: dict
     ):
@@ -99,20 +101,12 @@ class AudioCapture:
         if "blocksize" in options:
             self.__chunk_size = options["blocksize"]
 
-        if self.__echo_cancellation:
-            if not self.__chunk_size:
-                logger.warning(
-                    "Echo cancellation needs a fixed block size and this stream has "
-                    "none; it will be disabled."
-                )
-                self.__echo_cancellation = False
-            else:
-                self.__aec = EchoCanceller(
-                    block_size=self.__chunk_size,
-                    sample_rate=self.__sample_rate,
-                    tail_ms=self.__echo_tail_ms,
-                    logging=self.__logging,
-                )
+        if self.__echo_cancellation and not self.__chunk_size:
+            logger.warning(
+                "Echo cancellation needs a fixed block size and this stream has "
+                "none; it will be disabled."
+            )
+            self.__echo_cancellation = False
 
         self.__logging and logger.debug(
             "AudioCapture initialized with sample_rate={}, channels={}, chunk_size={}, dtype={}".format(
@@ -376,6 +370,40 @@ class AudioCapture:
         with self.__lifecycle_lock:
             return self.__start_locked()
 
+    def __build_canceller(self, stream) -> None:
+        """Size the echo filter from the delay this device actually reports.
+
+        The filter can only remove echo that arrives within its reach, and how
+        far behind the echo is depends entirely on the hardware: a few
+        milliseconds on a good interface, a hundred on ordinary Windows
+        playback, several hundred over Bluetooth. A fixed guess is wrong on most
+        machines, so the device is asked, and only the room reverberation is
+        left as an assumption. Reach is not free either, since a longer filter
+        spreads its learning thinner, which is why this is measured rather than
+        simply made generous.
+        """
+        if not self.__echo_cancellation:
+            return
+
+        tail_ms = self.__echo_tail_ms
+        if tail_ms is None:
+            try:
+                latency_in, latency_out = stream.latency
+                device_ms = (float(latency_in) + float(latency_out)) * 1000.0
+            except Exception:
+                device_ms = 120.0
+            tail_ms = min(400.0, max(120.0, device_ms + ROOM_REVERB_ALLOWANCE_MS))
+
+        self.__aec = EchoCanceller(
+            block_size=self.__chunk_size,
+            sample_rate=self.__sample_rate,
+            tail_ms=tail_ms,
+            logging=self.__logging,
+        )
+        self.__logging and logger.debug(
+            "Echo canceller sized to {:.0f} ms for this device.".format(tail_ms)
+        )
+
     def __start_callback_worker(self) -> None:
         self.__callback_thread = threading.Thread(
             target=self.__callback_worker, daemon=True, name="AudioUserCallback"
@@ -401,6 +429,7 @@ class AudioCapture:
                     callback=self.__duplex_callback,
                 )
                 self.__duplex_stream.start()
+                self.__build_canceller(self.__duplex_stream)
                 self.__logging and logger.debug(
                     "Duplex stream started; echo cancellation {}.".format(
                         "on" if self.__aec is not None else "off"

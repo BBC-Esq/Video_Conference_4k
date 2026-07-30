@@ -30,7 +30,7 @@ class EchoCanceller:
         self,
         block_size: int,
         sample_rate: int = 48000,
-        tail_ms: float = 120.0,
+        tail_ms: float = 200.0,
         step_size: float = 0.5,
         residual_suppression: bool = True,
         logging: bool = False,
@@ -55,6 +55,10 @@ class EchoCanceller:
         self._power = np.full(self._bins, 1e-6)
         self._step = float(step_size)
         self._eps = 1e-8
+        self._power_floor = 1e-5
+        self._quiet_far = 1e-7
+        self._diverged_blocks = 0
+        self._divergences = 0
 
         self._residual_suppression = residual_suppression
         self._echo_power = np.full(self._bins, 1e-9)
@@ -121,6 +125,8 @@ class EchoCanceller:
         self._echo_power[:] = 1e-9
         self._err_power[:] = 1e-9
         self._erle_db = 0.0
+        self._converged = False
+        self._hangover = 0
 
     def process(self, mic: NDArray, reference: NDArray) -> NDArray:
         """Subtract the echo of `reference` from `mic`, one block at a time.
@@ -158,8 +164,16 @@ class EchoCanceller:
         # numbers and the first update afterwards would overshoot wildly.
         self._power *= 0.9
         self._power += 0.1 * (np.abs(spectrum) ** 2)
+        # A floor under the estimate. Without one it decays towards zero through
+        # every quiet passage, and the next update divides by almost nothing and
+        # throws the filter to infinity; the microphone then comes out louder
+        # than it went in.
+        np.maximum(self._power, self._power_floor, out=self._power)
 
         adapt = not self._is_double_talk()
+
+        if self._check_divergence(near, error):
+            adapt = False
 
         if adapt:
             self._adapted_blocks += 1
@@ -182,6 +196,37 @@ class EchoCanceller:
             out = self._suppress_residual(error, estimated, gentle=not adapt)
 
         return self._restore(out, original_shape, original_dtype)
+
+    def _check_divergence(self, near, error) -> bool:
+        """Notice the filter making things worse, and undo it.
+
+        Subtracting an estimate that has gone wrong adds energy rather than
+        removing it, and the person at the other end hears something worse than
+        no cancellation at all. Persistently louder output than input is the
+        symptom, and the only safe response is to throw the learned filter away
+        and start again.
+        """
+        near_e = float(np.dot(near, near))
+        err_e = float(np.dot(error, error))
+
+        if err_e > near_e * 4.0 and near_e > 1e-12:
+            self._diverged_blocks += 1
+        else:
+            self._diverged_blocks = max(0, self._diverged_blocks - 1)
+
+        if self._diverged_blocks > 10:
+            self._divergences += 1
+            logger.warning(
+                "Echo canceller diverged and was reset ({} so far).".format(self._divergences)
+            )
+            self.reset()
+            self._diverged_blocks = 0
+            return True
+        return False
+
+    @property
+    def divergences(self) -> int:
+        return self._divergences
 
     def _constrain(self) -> None:
         """Discard the part of each partition's response that cannot be real.
@@ -232,7 +277,7 @@ class EchoCanceller:
         # moment ago is still arriving, and that reads as the near speaker.
         peak_far = float(self._far_recent.max())
 
-        if peak_far < 1e-9:
+        if peak_far < self._quiet_far:
             return True
 
         if self._converged:
@@ -281,11 +326,15 @@ class EchoCanceller:
 
     def _to_mono_float(self, data: NDArray) -> NDArray:
         arr = np.asarray(data)
+        # Read the dtype before mixing channels down. Averaging promotes
+        # integers to float, so asking afterwards says float for what were
+        # whole-numbered samples, the scaling is skipped, and everything
+        # arrives here a factor of thirty thousand too large.
+        dtype = arr.dtype
         if arr.ndim > 1:
             arr = arr.mean(axis=1)
-        if np.issubdtype(arr.dtype, np.integer):
-            scale = float(np.iinfo(arr.dtype).max)
-            return arr.astype(np.float64) / scale
+        if np.issubdtype(dtype, np.integer):
+            return arr.astype(np.float64) / float(np.iinfo(dtype).max)
         return arr.astype(np.float64, copy=False)
 
     def _restore(self, mono: NDArray, shape, dtype) -> NDArray:
