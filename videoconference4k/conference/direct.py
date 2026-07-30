@@ -302,6 +302,11 @@ class DirectConference:
 
         self.__terminate.clear()
         self.__want_remote_keyframe = True
+        # A codec agreed with a previous peer must not outlive it. The
+        # transports below are new and encode the configured codec, and
+        # negotiation skips any codec it believes is already in force, so a
+        # stale value here means the agreement is never applied to them.
+        self.__negotiated_codec = normalize_codec(self.__gpu_codec)
         self.__threads = [
             threading.Thread(target=self.__video_send_loop, name="DirectVideoSend", daemon=True),
             threading.Thread(target=self.__video_recv_loop, name="DirectVideoRecv", daemon=True),
