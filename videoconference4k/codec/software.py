@@ -122,7 +122,7 @@ class SoftwareEncoder(FFmpegPipeEncoder):
             "-b:v", "{}k".format(bitrate_k),
             "-maxrate", "{}k".format(bitrate_k),
             "-bufsize", "{}k".format(bufsize_k),
-            "-g", str(self._framerate),
+            "-g", str(self.gop),
             "-f", "hevc" if self._is_hevc else "h264",
             "pipe:1"
         ]
@@ -194,7 +194,7 @@ class SoftwareEncoderSync(FFmpegSyncEncoder):
             "-b:v", "{}k".format(bitrate_k),
             "-maxrate", "{}k".format(bitrate_k),
             "-bufsize", "{}k".format(bufsize_k),
-            "-g", str(self._framerate),
+            "-g", str(self.gop),
             "-f", "hevc" if self._is_hevc else "h264",
             "pipe:1"
         ]

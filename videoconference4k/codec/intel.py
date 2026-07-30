@@ -141,7 +141,7 @@ class IntelEncoder(FFmpegPipeEncoder):
             cmd.extend(["-vcm", "1"])
 
         cmd.extend([
-            "-g", str(self._framerate),
+            "-g", str(self.gop),
             "-f", "h264" if self._codec.lower() == "h264" else "hevc",
             "pipe:1"
         ])
@@ -217,7 +217,7 @@ class IntelEncoderSync(FFmpegSyncEncoder):
             ])
 
         cmd.extend([
-            "-g", str(self._framerate),
+            "-g", str(self.gop),
             "-f", "h264" if self._codec.lower() == "h264" else "hevc",
             "pipe:1"
         ])

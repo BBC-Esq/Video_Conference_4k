@@ -4,7 +4,13 @@ import numpy as np
 from typing import Optional
 from numpy.typing import NDArray
 
-from .base import BaseEncoder, BaseDecoder
+from .base import (
+    BaseEncoder,
+    BaseDecoder,
+    DEFAULT_GOP_SECONDS_ON_DEMAND,
+    DEFAULT_GOP_SECONDS_PERIODIC_ONLY,
+    gop_length,
+)
 from ..utils.common import get_logger, import_dependency_safe, set_cuda_paths
 
 set_cuda_paths()
@@ -157,6 +163,7 @@ class NvidiaEncoder(BaseEncoder):
         tuning: str = "ultra_low_latency",
         rate_control: str = "cbr",
         gpu_id: int = 0,
+        gop_seconds: Optional[float] = None,
         logging: bool = False,
     ):
         self._logging = logging
@@ -178,11 +185,21 @@ class NvidiaEncoder(BaseEncoder):
 
         import_dependency_safe("PyNvVideoCodec" if nvc is None else "")
 
+        self._force_idr_flag = int(nvc.FORCEIDR) if hasattr(nvc, "FORCEIDR") else None
+
+        if gop_seconds is None:
+            gop_seconds = (
+                DEFAULT_GOP_SECONDS_ON_DEMAND
+                if self._force_idr_flag is not None
+                else DEFAULT_GOP_SECONDS_PERIODIC_ONLY
+            )
+        self._gop_seconds = max(0.5, float(gop_seconds))
+
         encoder_params = {
             "preset": preset,
             "tuning_info": tuning,
             "fps": framerate,
-            "gop": framerate,
+            "gop": gop_length(framerate, self._gop_seconds),
             "num_max_bframes": 0,
             "repeatspspps": 1,
             "lookahead": 0,
@@ -209,7 +226,6 @@ class NvidiaEncoder(BaseEncoder):
 
         self._bitrate = bitrate
         self._maxbitrate = max_bitrate
-        self._force_idr_flag = int(nvc.FORCEIDR) if hasattr(nvc, "FORCEIDR") else None
 
         core_keys = ("preset", "tuning_info", "fps", "gop", "rc", "bitrate", "maxbitrate")
         core_params = {k: v for k, v in encoder_params.items() if k in core_keys}
@@ -260,6 +276,14 @@ class NvidiaEncoder(BaseEncoder):
     @property
     def bitrate(self) -> int:
         return self._bitrate
+
+    @property
+    def supports_force_idr(self) -> bool:
+        return self._force_idr_flag is not None
+
+    @property
+    def gop_seconds(self) -> float:
+        return self._gop_seconds
 
     @property
     def supports_dynamic_bitrate(self) -> bool:

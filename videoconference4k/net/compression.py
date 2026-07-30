@@ -185,6 +185,29 @@ class CompressionHandler:
         return self._use_nvidia or self._use_intel or self._use_software or self._use_jpeg
 
     @property
+    def active_encoder(self):
+        """The encoder currently producing frames, or None before the first one."""
+        if self._use_nvidia:
+            return self._nvidia_encoder
+        if self._use_intel:
+            return self._intel_encoder
+        if self._use_software:
+            return self._software_encoder
+        if self._use_jpeg:
+            return self._jpeg_encoder
+        return None
+
+    @property
+    def supports_force_idr(self) -> bool:
+        """Whether a keyframe request reaching this machine can actually be honoured.
+
+        Reported rather than assumed, so a peer asking for one that will never
+        arrive is a visible condition instead of a silent wait.
+        """
+        encoder = self.active_encoder
+        return bool(encoder is not None and encoder.supports_force_idr)
+
+    @property
     def supports_dynamic_bitrate(self) -> bool:
         if self._use_nvidia and self._nvidia_encoder is not None:
             return self._nvidia_encoder.supports_dynamic_bitrate
@@ -366,7 +389,7 @@ class CompressionHandler:
 
         elif self._use_intel:
             encoder = self._get_intel_encoder(width, height)
-            encoded = encoder.encode(frame)
+            encoded = encoder.encode(frame, force_idr=force_idr)
             metadata = {
                 "type": CompressionType.INTEL_QSV,
                 "codec": normalize_codec(self._gpu_codec),
@@ -377,7 +400,7 @@ class CompressionHandler:
 
         elif self._use_software:
             encoder = self._get_software_encoder(width, height)
-            encoded = encoder.encode(frame)
+            encoded = encoder.encode(frame, force_idr=force_idr)
             metadata = {
                 "type": CompressionType.SOFTWARE,
                 "codec": normalize_codec(self._gpu_codec),
@@ -388,7 +411,7 @@ class CompressionHandler:
 
         elif self._use_jpeg:
             encoder = self._get_jpeg_encoder(width, height)
-            encoded = encoder.encode(frame)
+            encoded = encoder.encode(frame, force_idr=force_idr)
             metadata = encoder.get_compression_metadata()
             return encoded, metadata
 

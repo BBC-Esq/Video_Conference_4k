@@ -122,6 +122,7 @@ class SyncTransport:
         self.__frames_pipe_dropped = 0
         self.__force_local_idr = False
         self.__peer_wants_keyframe = False
+        self.__keyframe_requests_unmet = 0
         self.__request_keyframe_pending = False
         self.__local_capabilities = None
         self.__peer_capabilities = None
@@ -1148,7 +1149,24 @@ class SyncTransport:
     def set_codec(self, codec: str) -> bool:
         return self.__compression_handler.set_codec(codec)
 
+    @property
+    def supports_force_idr(self) -> bool:
+        return self.__compression_handler.supports_force_idr
+
+    @property
+    def keyframe_requests_unmet(self) -> int:
+        return self.__keyframe_requests_unmet
+
     def force_next_keyframe(self) -> None:
+        if not self.__compression_handler.supports_force_idr:
+            self.__keyframe_requests_unmet += 1
+            self.__logging and logger.debug(
+                "A keyframe was asked for but {} cannot produce one on demand; "
+                "the peer waits for the periodic one instead.".format(
+                    self.__compression_handler.encoder_kind
+                )
+            )
+            return
         self.__force_local_idr = True
 
     def request_keyframe(self) -> None:

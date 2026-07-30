@@ -72,7 +72,12 @@ class JpegEncoder(BaseEncoder):
     def colorspace(self) -> str:
         return self._colorspace
 
-    def encode(self, frame: NDArray) -> bytes:
+    @property
+    def supports_force_idr(self) -> bool:
+        """Every JPEG frame is a keyframe, so a request for one is always already met."""
+        return True
+
+    def encode(self, frame: NDArray, force_idr: bool = False) -> bytes:
         import cv2
 
         if frame.shape[1] != self._width or frame.shape[0] != self._height:

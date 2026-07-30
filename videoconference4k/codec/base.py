@@ -12,6 +12,14 @@ def get_ffmpeg_path() -> Optional[str]:
     return shutil.which("ffmpeg")
 
 
+DEFAULT_GOP_SECONDS_ON_DEMAND = 4.0
+DEFAULT_GOP_SECONDS_PERIODIC_ONLY = 1.0
+
+
+def gop_length(framerate: int, gop_seconds: float) -> int:
+    return max(1, int(round(framerate * gop_seconds)))
+
+
 CODEC_ALIASES = {
     "h264": "h264", "x264": "h264", "avc": "h264", "libx264": "h264",
     "hevc": "hevc", "h265": "hevc", "x265": "hevc", "libx265": "hevc",
@@ -101,8 +109,18 @@ class BaseEncoder(ABC):
         pass
 
     @abstractmethod
-    def encode(self, frame: NDArray) -> bytes:
+    def encode(self, frame: NDArray, force_idr: bool = False) -> bytes:
         pass
+
+    @property
+    def supports_force_idr(self) -> bool:
+        """Whether a keyframe can be demanded of this encoder mid-stream.
+
+        This decides how long the group of pictures may safely be. An encoder
+        that cannot produce a keyframe on request leaves the periodic one as the
+        only way a receiver ever recovers, so its GOP must stay short.
+        """
+        return False
 
     @abstractmethod
     def flush(self) -> bytes:
@@ -152,6 +170,7 @@ class FFmpegPipeEncoder(BaseEncoder):
         framerate: int,
         codec_type: str,
         logger,
+        gop_seconds: float = DEFAULT_GOP_SECONDS_PERIODIC_ONLY,
         logging: bool = False,
     ):
         self._logging = logging
@@ -160,6 +179,7 @@ class FFmpegPipeEncoder(BaseEncoder):
         self._framerate = framerate
         self._codec_type_str = codec_type
         self._logger = logger
+        self._gop_seconds = max(0.5, float(gop_seconds))
         self._process = None
         self._frame_size = width * height * 3
         self._codec = None
@@ -183,6 +203,14 @@ class FFmpegPipeEncoder(BaseEncoder):
     @property
     def codec(self) -> str:
         return self._codec
+
+    @property
+    def gop_seconds(self) -> float:
+        return self._gop_seconds
+
+    @property
+    def gop(self) -> int:
+        return gop_length(self._framerate, self._gop_seconds)
 
     def _build_ffmpeg_cmd(self) -> list:
         raise NotImplementedError("Subclasses must implement _build_ffmpeg_cmd")
@@ -227,7 +255,14 @@ class FFmpegPipeEncoder(BaseEncoder):
         except Exception:
             pass
 
-    def encode(self, bgr_frame: NDArray) -> bytes:
+    def encode(self, bgr_frame: NDArray, force_idr: bool = False) -> bytes:
+        """Encode one frame.
+
+        force_idr is accepted and ignored: frames reach ffmpeg through a raw pipe
+        with no side channel, so a keyframe cannot be demanded of a running
+        subprocess. supports_force_idr reports False accordingly, and the caller
+        keeps this encoder on a short GOP because of it.
+        """
         import cv2
 
         if self._process is None or self._process.poll() is not None:
@@ -319,6 +354,7 @@ class FFmpegSyncEncoder(BaseEncoder):
         framerate: int,
         codec_type: str,
         logger,
+        gop_seconds: float = DEFAULT_GOP_SECONDS_PERIODIC_ONLY,
         logging: bool = False,
     ):
         self._logging = logging
@@ -327,6 +363,7 @@ class FFmpegSyncEncoder(BaseEncoder):
         self._framerate = framerate
         self._codec_type_str = codec_type
         self._logger = logger
+        self._gop_seconds = max(0.5, float(gop_seconds))
         self._frames = []
         self._codec = None
 
@@ -346,10 +383,18 @@ class FFmpegSyncEncoder(BaseEncoder):
     def codec(self) -> str:
         return self._codec
 
+    @property
+    def gop_seconds(self) -> float:
+        return self._gop_seconds
+
+    @property
+    def gop(self) -> int:
+        return gop_length(self._framerate, self._gop_seconds)
+
     def _build_ffmpeg_cmd(self) -> list:
         raise NotImplementedError("Subclasses must implement _build_ffmpeg_cmd")
 
-    def encode(self, bgr_frame: NDArray) -> bytes:
+    def encode(self, bgr_frame: NDArray, force_idr: bool = False) -> bytes:
         import cv2
 
         if bgr_frame.shape[1] != self._width or bgr_frame.shape[0] != self._height:
