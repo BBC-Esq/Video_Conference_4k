@@ -729,6 +729,8 @@ def run_call(args):
                 peer_address=args.peer,
                 video_port=str(args.video_port),
                 audio_port=str(args.audio_port),
+                peer_video_port=str(args.peer_video_port) if args.peer_video_port else None,
+                peer_audio_port=str(args.peer_audio_port) if args.peer_audio_port else None,
                 camera_id=args.camera,
                 microphone_id=args.mic,
                 speaker_id=args.speaker,
@@ -908,6 +910,14 @@ def main():
                         help="speaker index from --preflight (default: system default)")
     parser.add_argument("--video-port", default="5555")
     parser.add_argument("--audio-port", default="5556")
+    parser.add_argument("--peer-video-port", default=None,
+                        help="the other machine's video port, if it differs from ours")
+    parser.add_argument("--peer-audio-port", default=None,
+                        help="the other machine's audio port, if it differs from ours")
+    parser.add_argument("--loopback", choices=("a", "b"), default=None,
+                        help="call this machine from itself, to check the pipeline "
+                             "without a second PC: run --loopback a in one terminal "
+                             "and --loopback b in another")
     parser.add_argument("--no-audio", action="store_true")
     parser.add_argument("--no-gpu", action="store_true")
     parser.add_argument("--fixed-bitrate", action="store_true",
@@ -919,6 +929,20 @@ def main():
     parser.add_argument("--verbose", action="store_true")
     args = parser.parse_args()
     args.preset = PRESET_ALIASES.get(args.preset, args.preset)
+
+    if args.loopback:
+        # Crossed ports against this machine, so the whole pipeline can be
+        # exercised without a second PC. Two terminals, one of each side.
+        mine, theirs = (("5555", "5556"), ("5565", "5566"))
+        if args.loopback == "b":
+            mine, theirs = theirs, mine
+        args.peer = args.peer or "127.0.0.1"
+        args.video_port, args.audio_port = mine
+        args.peer_video_port, args.peer_audio_port = theirs
+        if args.loopback == "b" and args.camera == 0:
+            print("note: both sides will open camera 0; pass --camera to side b "
+                  "if your webcam refuses to open twice, or use --no-audio to "
+                  "avoid both sides fighting over the microphone.")
 
     if args.preflight:
         preflight(args)
