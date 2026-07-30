@@ -806,6 +806,33 @@ def run_call(args):
 
             handshake = "agreed" if stats["peer_capabilities"] else "waiting for peer"
 
+            if not stats.get("encoder_alive", True):
+                encoder_state = "DEAD"
+            elif stats.get("can_force_keyframe"):
+                encoder_state = "live, keyframe on demand"
+            else:
+                encoder_state = "live, keyframe only on the GOP"
+
+            silent = stats.get("video_silent_s")
+            if not stats.get("receiving_video"):
+                arriving = "NOTHING ARRIVING" if silent is None else \
+                    "NOTHING FOR {:.1f}s".format(silent)
+            else:
+                arriving = "live"
+
+            latency = stats.get("peer_latency_ms")
+            latency_text = "{:.0f} ms".format(latency) if latency is not None else "-"
+
+            audio_bits = []
+            if not args.no_audio:
+                audio_bits.append("in {}".format(
+                    "live" if stats.get("receiving_audio") else "silent"))
+                if stats.get("audio_jitter_depth_ms") is not None:
+                    audio_bits.append("buffer {:.0f} ms".format(stats["audio_jitter_depth_ms"]))
+                audio_bits.append("underruns {}".format(stats.get("audio_underruns", 0)))
+                if stats.get("audio_callback_drops"):
+                    audio_bits.append("cb drops {}".format(stats["audio_callback_drops"]))
+
             lines = [
                 "preset {}   {}x{}@{}   audio {}   handshake: {}".format(
                     args.preset, cfg["resolution"][0], cfg["resolution"][1], cfg["framerate"],
@@ -814,9 +841,12 @@ def run_call(args):
                 "SENDING     {:<6} encoded by {:<20}  {:6.1f} fps  {:7.0f} kbps  target {:.1f} Mbps".format(
                     stats["send_codec"] or "-", friendly(stats["send_impl"]),
                     send_fps, stats["send_kbps"], stats["target_bitrate"] / 1e6),
+                "            encoder {}   peer answers in {}".format(encoder_state, latency_text),
                 "RECEIVING   {:<6} decoded by {:<20}  {:6.1f} fps  hold {:3d}   first frame: {}".format(
                     stats["recv_codec"] or "-", friendly(stats["recv_impl"]),
                     recv_fps, stats["video_hold_depth"], first),
+                "            {}   {} frames in so far".format(
+                    arriving, stats.get("frames_received", 0)),
                 "peer can    {}".format(summarise_capabilities(stats["peer_capabilities"])),
                 "my order    {}".format(", ".join(self.conf.codec_priority)),
                 "",
@@ -828,6 +858,10 @@ def run_call(args):
                     stats["frames_lagged"], stats["frames_dropped"], stats["frames_skipped"],
                     stats["reconnects"]),
             ]
+            if audio_bits:
+                lines.append("audio    {}".format("   ".join(audio_bits)))
+            if stats.get("encoder_error") and not stats.get("encoder_alive", True):
+                lines.append("encoder said: {}".format(stats["encoder_error"][:120]))
             self.stats_label.setText("\n".join(lines))
 
         def closeEvent(self, event):

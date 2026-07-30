@@ -113,7 +113,9 @@ class SyncTransport:
         self.__ack_seq = 0
         self.__ack_sent_at = {}
         self.__ack_deadline = None
+        self.__stale_ack_s = 3.0
         self.__peer_latency_ms = None
+        self.__last_ack_at = None
         self.__acks_lost = 0
         self.__pts_fifo = deque()
         self.__pts_fifo_max = 16
@@ -1251,6 +1253,7 @@ class SyncTransport:
                 self.__ack_sent_at.clear()
 
         if got_one:
+            self.__last_ack_at = time.monotonic()
             self.__max_retries = self.__retry_budget
 
         if not self.__ack_sent_at:
@@ -1269,6 +1272,10 @@ class SyncTransport:
         queueing it therefore includes is the useful part, since a rising value
         means the far end is falling behind before any frame is dropped.
         """
+        if self.__last_ack_at is None:
+            return None
+        if time.monotonic() - self.__last_ack_at > self.__stale_ack_s:
+            return None
         return self.__peer_latency_ms
 
     @property
