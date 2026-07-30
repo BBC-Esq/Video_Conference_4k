@@ -838,9 +838,12 @@ def run_call(args):
                     audio_bits.append("buffer {:.0f} ms".format(stats["audio_jitter_depth_ms"]))
                 audio_bits.append("underruns {}".format(stats.get("audio_underruns", 0)))
                 if stats.get("echo_cancellation"):
+                    backend = stats.get("echo_backend") or "?"
                     reduction = stats.get("echo_reduction_db")
-                    audio_bits.append("echo -{:.0f} dB".format(abs(reduction))
-                                      if reduction and reduction > 1.0 else "echo cancel on")
+                    audio_bits.append(
+                        "echo {} -{:.0f} dB".format(backend, abs(reduction))
+                        if reduction and reduction > 1.0
+                        else "echo {} on".format(backend))
                 elif stats.get("audio_duplex") is False:
                     audio_bits.append("echo cancel OFF (no shared clock)")
                 if stats.get("audio_callback_drops"):
@@ -885,7 +888,24 @@ def run_call(args):
 
     print("Starting call to {} on ports {}/{} using preset '{}'".format(
         args.peer, args.video_port, args.audio_port, args.preset))
-    print("Use headphones on both machines or the microphones will echo.")
+    try:
+        from videoconference4k.capture.aec_backends import available_backends, ORDER
+        found = available_backends()
+        best = next((n for n in ORDER if found.get(n) is True), None)
+        print()
+        print("Echo cancellation backends, best first:")
+        for name in ORDER:
+            state = found.get(name)
+            mark = "USING" if name == best else ("ok" if state is True else "-")
+            detail = "" if state is True else "   {}".format(state)
+            print("   {:<5} {:<10}{}".format(mark, name, detail))
+        if best != "localvqe":
+            print("   (set VIDEOCONFERENCE4K_LOCALVQE to a folder holding localvqe.dll,")
+            print("    the ggml dlls and a localvqe gguf to use the strongest one)")
+    except Exception as exc:
+        print("Could not check echo backends: {}".format(exc))
+    print()
+    print("Use headphones on both machines, or rely on the echo canceller above.")
     app = QApplication(sys.argv)
     window = CallWindow()
     window.show()

@@ -49,6 +49,7 @@ class DirectConference:
         audio_jitter_ms: float = 80.0,
         echo_cancellation: bool = True,
         echo_tail_ms: Optional[float] = None,
+        echo_backend: str = "auto",
         peer_wait_s: float = 900.0,
         lipsync: bool = True,
         audio_sync_offset_ms: float = 0.0,
@@ -111,6 +112,7 @@ class DirectConference:
                 output_jitter_ms=self.__audio_jitter_ms,
                 echo_cancellation=echo_cancellation,
                 echo_tail_ms=echo_tail_ms,
+                echo_backend=echo_backend,
                 logging=logging,
             )
 
@@ -666,6 +668,8 @@ class DirectConference:
                              if self.__audio is not None else False),
             "echo_reduction_db": (self.__audio.echo_reduction_db
                                   if self.__audio is not None else None),
+            "echo_backend": (self.__audio.echo_backend
+                             if self.__audio is not None else None),
             "audio_underruns": (self.__audio.jitter_underruns()
                                 if self.__audio is not None else 0),
             "audio_callback_drops": (self.__audio.callback_drops

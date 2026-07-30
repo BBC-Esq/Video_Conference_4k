@@ -72,6 +72,30 @@ print(s["recv_codec"], s["recv_impl"])   # what is arriving, and what decodes it
 `examples/two_machine_call.py` wraps this in a window with a preflight check
 (`--preflight`) that reports what your camera, GPU and ffmpeg build can do.
 
+### Echo Cancellation
+
+Without headphones, your microphone picks up the other person's voice from your
+speakers and sends it back. `DirectConference` cancels that automatically,
+choosing the best canceller present on the machine:
+
+| backend | echo removed | needs |
+|---|---|---|
+| `localvqe` | ~58 dB | a compiled library, pointed at by `VIDEOCONFERENCE4K_LOCALVQE` |
+| `webrtc` | ~27 dB | `pip install livekit` |
+| `numpy` | ~13 dB | nothing, always present |
+
+Measured on identical signals with the echo arriving 165 ms late and a second
+person talking over it. The first two run at 16 kHz, so they do not cancel above
+8 kHz; the third is the gentlest on your own voice when both people speak at
+once. Pick one explicitly if you would rather not have it chosen for you:
+
+```python
+conference = DirectConference(peer_address="192.168.1.42", echo_backend="webrtc")
+```
+
+`examples/two_machine_call.py --preflight` prints which of the three this
+machine can use.
+
 ### Peer-to-Peer Call Over the Internet
 
 `PeerConference` uses WebRTC, so it traverses NAT without port forwarding.

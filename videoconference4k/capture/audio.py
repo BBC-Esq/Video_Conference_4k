@@ -12,6 +12,7 @@ from ..utils.common import (
 )
 from .jitter import JitterBuffer
 from .aec import EchoCanceller
+from .aec_backends import create_canceller
 
 sd = import_dependency_safe("sounddevice", error="silent")
 
@@ -37,6 +38,7 @@ class AudioCapture:
         output_jitter_ms: float = 0.0,
         echo_cancellation: bool = True,
         echo_tail_ms: Optional[float] = None,
+        echo_backend: str = "auto",
         logging: bool = False,
         **options: dict
     ):
@@ -81,6 +83,8 @@ class AudioCapture:
         self.__aec_failures = 0
         self.__echo_cancellation = bool(echo_cancellation) and enable_input and enable_output
         self.__echo_tail_ms = echo_tail_ms
+        self.__echo_backend = echo_backend
+        self.__echo_backend_used = None
 
         self.__terminate = threading.Event()
         self.__lifecycle_lock = threading.RLock()
@@ -149,6 +153,11 @@ class AudioCapture:
     @property
     def echo_cancellation(self) -> bool:
         return self.__aec is not None
+
+    @property
+    def echo_backend(self) -> Optional[str]:
+        """Which canceller is actually running, which is not always the best one."""
+        return self.__echo_backend_used
 
     @property
     def echo_reduction_db(self) -> Optional[float]:
@@ -394,14 +403,20 @@ class AudioCapture:
                 device_ms = 120.0
             tail_ms = min(400.0, max(120.0, device_ms + ROOM_REVERB_ALLOWANCE_MS))
 
-        self.__aec = EchoCanceller(
+        # The measured device delay is what the neural backends need told to
+        # them, and what sizes the filter for the one that learns it itself.
+        self.__aec = create_canceller(
             block_size=self.__chunk_size,
             sample_rate=self.__sample_rate,
             tail_ms=tail_ms,
+            backend=self.__echo_backend,
             logging=self.__logging,
+            stream_delay_ms=int(max(0.0, tail_ms - ROOM_REVERB_ALLOWANCE_MS)),
         )
+        self.__echo_backend_used = getattr(self.__aec, "name", "numpy")
         self.__logging and logger.debug(
-            "Echo canceller sized to {:.0f} ms for this device.".format(tail_ms)
+            "Echo canceller: {} backend, sized to {:.0f} ms for this device.".format(
+                self.__echo_backend_used, tail_ms)
         )
 
     def __start_callback_worker(self) -> None:
