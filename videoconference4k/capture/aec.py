@@ -24,6 +24,12 @@ class EchoCanceller:
     it must be given for every block, including the silent ones. Skipping
     silence would shift the reference against the microphone and the filter
     would be learning a delay that is not there.
+
+    Mains hum is the awkward case. When its period divides the block length the
+    tone lands exactly on one frequency bin, and every bin around it is left
+    with almost no excitation to learn from. Both the step normalisation and the
+    projection back onto a real room response depend on that not happening, so
+    the power floor below is load bearing rather than defensive.
     """
 
     def __init__(
@@ -55,6 +61,11 @@ class EchoCanceller:
         self._power = np.full(self._bins, 1e-6)
         self._step = float(step_size)
         self._eps = 1e-8
+        # No bin may be treated as quieter than this fraction of the loudest
+        # one. The step in each bin is divided by that bin's own power, so a
+        # nearly empty bin next to a very loud one would otherwise take an
+        # enormous step on almost no evidence.
+        self._power_floor_rel = 1e-3
         self._power_floor = 1e-5
         self._quiet_far = 1e-7
         self._diverged_blocks = 0
@@ -168,7 +179,9 @@ class EchoCanceller:
         # every quiet passage, and the next update divides by almost nothing and
         # throws the filter to infinity; the microphone then comes out louder
         # than it went in.
-        np.maximum(self._power, self._power_floor, out=self._power)
+        floor = max(self._power_floor,
+                    float(self._power.max()) * self._power_floor_rel)
+        np.maximum(self._power, floor, out=self._power)
 
         adapt = not self._is_double_talk()
 
@@ -231,8 +244,15 @@ class EchoCanceller:
     def _constrain(self) -> None:
         """Discard the part of each partition's response that cannot be real.
 
-        Without this the filter slowly accumulates energy in the wrapped-around
-        half of every block and the cancellation drifts apart.
+        A real room's response fits within one block, so the wrapped-around half
+        is an artefact of doing this in the frequency domain and is thrown away.
+
+        This projection spreads whatever it removes across every frequency, so
+        it is only safe while no bin can take a large step on weak evidence.
+        The floor relative to the loudest bin is what guarantees that; without
+        it a tone landing exactly on a bin centre sets up a fight between the
+        adaptation concentrating weight there and this projection smearing it
+        back out, and the filter inverts.
         """
         taps = np.fft.irfft(self._weights, n=self._fft, axis=1)
         taps[:, self._n:] = 0.0
