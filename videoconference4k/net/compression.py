@@ -539,10 +539,7 @@ def decode_sync_frame(
     if isinstance(compression_info, dict):
         comp_type = compression_info.get("type")
 
-        if comp_type == CompressionType.NVENC:
-            return compression_handler.decode_frame(data, compression_info)
-
-        elif comp_type == CompressionType.SOFTWARE:
+        if comp_type in VIDEO_CODEC_TYPES:
             return compression_handler.decode_frame(data, compression_info)
 
         else:

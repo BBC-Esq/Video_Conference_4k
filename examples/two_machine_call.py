@@ -814,11 +814,16 @@ def run_call(args):
                 encoder_state = "live, keyframe only on the GOP"
 
             silent = stats.get("video_silent_s")
-            if not stats.get("receiving_video"):
+            if not stats.get("recv_transport_alive", True):
+                arriving = "RECEIVE TRANSPORT GAVE UP - restart both sides"
+            elif not stats.get("receiving_video"):
                 arriving = "NOTHING ARRIVING" if silent is None else \
                     "NOTHING FOR {:.1f}s".format(silent)
             else:
                 arriving = "live"
+
+            if not stats.get("send_transport_alive", True):
+                arriving += "   SEND TRANSPORT GAVE UP"
 
             latency = stats.get("peer_latency_ms")
             latency_text = "{:.0f} ms".format(latency) if latency is not None else "-"

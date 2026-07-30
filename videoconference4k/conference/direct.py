@@ -48,7 +48,8 @@ class DirectConference:
         audio_bitrate: int = 32000,
         audio_jitter_ms: float = 80.0,
         echo_cancellation: bool = True,
-        echo_tail_ms: float = 120.0,
+        echo_tail_ms: Optional[float] = None,
+        peer_wait_s: float = 900.0,
         lipsync: bool = True,
         audio_sync_offset_ms: float = 0.0,
         lipsync_deadband_ms: float = 40.0,
@@ -72,6 +73,15 @@ class DirectConference:
         self.__audio_bitrate = audio_bitrate
         self.__audio_jitter_ms = audio_jitter_ms
         self.__enable_upnp = enable_upnp
+
+        # How long to keep waiting for a peer that has not arrived. The default
+        # transport gives up after three silent polls, about thirty-six seconds,
+        # which is shorter than it takes to walk to the other machine and start
+        # it; the side that was started first would then be permanently deaf
+        # while still reporting itself healthy. A receiver loses nothing by
+        # waiting, and the stats now say plainly when nothing is arriving.
+        self.__peer_wait_s = max(36.0, float(peer_wait_s))
+        self.__peer_wait_retries = max(3, int(self.__peer_wait_s / 12.0))
 
         self.__owns_video_source = False
         if video_source is None:
@@ -267,11 +277,13 @@ class DirectConference:
             address="*", port=self.__video_port, receive_mode=True,
             gpu_accelerated=self.__gpu_accelerated, gpu_codec=self.__gpu_codec,
             gpu_bitrate=self.__gpu_bitrate, logging=self.__logging,
+            max_retries=self.__peer_wait_retries,
         )
         self.__send_video = SyncTransport(
             address=self.__peer_address, port=self.__peer_video_port,
             gpu_accelerated=self.__gpu_accelerated, gpu_codec=self.__gpu_codec,
             gpu_bitrate=self.__gpu_bitrate, logging=self.__logging,
+            max_retries=self.__peer_wait_retries,
         )
 
         if self.__enable_audio:
@@ -614,6 +626,10 @@ class DirectConference:
                                 and self.__send_video.peer_latency_ms is not None else None),
             "acks_lost": (self.__send_video.acks_lost
                           if self.__send_video is not None else 0),
+            "recv_transport_alive": (not self.__recv_video.abandoned
+                                     if self.__recv_video is not None else False),
+            "send_transport_alive": (not self.__send_video.abandoned
+                                     if self.__send_video is not None else False),
             "encoder_alive": (self.__send_video.encoder_alive
                               if self.__send_video is not None else True),
             "encoder_error": (self.__send_video.encoder_error

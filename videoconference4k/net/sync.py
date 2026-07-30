@@ -1283,6 +1283,16 @@ class SyncTransport:
         return self.__acks_lost
 
     @property
+    def abandoned(self) -> bool:
+        """Whether this transport has given up on the peer and stopped working.
+
+        Distinct from being quiet: a transport that has exhausted its retries
+        will never recover on its own, and reporting that as merely idle is how
+        a side ends up deaf while everything above it still looks healthy.
+        """
+        return self.__terminate.is_set()
+
+    @property
     def encoder_alive(self) -> bool:
         return self.__compression_handler.encoder_alive
 
