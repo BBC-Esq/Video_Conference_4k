@@ -146,6 +146,11 @@ class DirectConference:
         self.__abr_prev_sent = 0
         self.__abr_prev_dropped = 0
         self.__abr_prev_bytes = 0
+        self.__abr_probe_backoff = 4.0
+        self.__abr_probe_backoff_max = 60.0
+        self.__abr_probe_ceiling = None
+        self.__latency_floor = None
+        self.__latency_slack_ms = 30.0
 
         self.__shed_level = 0
         self.__shed_max = 3
@@ -208,6 +213,9 @@ class DirectConference:
         self.__abr_prev_sent = 0
         self.__abr_prev_dropped = 0
         self.__abr_prev_bytes = 0
+        self.__abr_probe_backoff = self.__abr_increase_interval
+        self.__abr_probe_ceiling = None
+        self.__latency_floor = None
         self.__shed_level = 0
         self.__shed_counter = 0
         self.__frames_skipped = 0
@@ -337,17 +345,62 @@ class DirectConference:
             self.__want_remote_keyframe = True
             logger.info("Negotiated {} for this direction with the peer.".format(wanted))
 
-    def _abr_decision(self, drop_frac: float, goodput_bps: float, now: float):
-        if drop_frac > self.__abr_drop_threshold:
-            target = max(self.__abr_min, min(self.__abr_target, int(goodput_bps * 0.9)))
-            if target < int(self.__abr_target * 0.95):
-                self.__abr_last_increase = now
-                return target
-        elif drop_frac <= 0.0 and (now - self.__abr_last_increase) >= self.__abr_increase_interval:
-            target = min(self.__abr_max, self.__abr_target + self.__abr_max // 10)
+    def _latency_congested(self, latency_ms: Optional[float]) -> bool:
+        """Whether the peer is falling behind, judged before any frame is lost.
+
+        The lowest latency seen on this call stands in for an uncongested link,
+        and a sustained rise above it means queueing somewhere in between.
+        """
+        if latency_ms is None:
+            return False
+        if self.__latency_floor is None or latency_ms < self.__latency_floor:
+            self.__latency_floor = latency_ms
+            return False
+        self.__latency_floor += (latency_ms - self.__latency_floor) * 0.01
+        return latency_ms > self.__latency_floor * 1.6 + self.__latency_slack_ms
+
+    def _abr_decision(self, drop_frac: float, goodput_bps: float, now: float,
+                      latency_ms: Optional[float] = None):
+        congested = drop_frac > self.__abr_drop_threshold or self._latency_congested(latency_ms)
+
+        if congested:
+            self.__abr_probe_ceiling = self.__abr_target
+            self.__abr_probe_backoff = min(
+                self.__abr_probe_backoff_max,
+                max(self.__abr_increase_interval, self.__abr_probe_backoff * 2.0),
+            )
             self.__abr_last_increase = now
-            if target > self.__abr_target:
+            reference = goodput_bps if drop_frac > self.__abr_drop_threshold else self.__abr_target
+            target = max(self.__abr_min, min(self.__abr_target, int(reference * 0.9)))
+            if target < int(self.__abr_target * 0.95):
                 return target
+            return None
+
+        if drop_frac > 0.0:
+            return None
+
+        if (now - self.__abr_last_increase) < self.__abr_probe_backoff:
+            return None
+
+        if goodput_bps < self.__abr_target * 0.85:
+            self.__abr_last_increase = now
+            return None
+
+        step = self.__abr_max // 10
+        if self.__abr_probe_ceiling is not None:
+            headroom = self.__abr_probe_ceiling - self.__abr_target
+            if headroom <= 0:
+                step = max(self.__abr_max // 40, 1)
+            else:
+                step = max(1, min(step, headroom // 2))
+
+        target = min(self.__abr_max, self.__abr_target + step)
+        self.__abr_last_increase = now
+        if target > self.__abr_target:
+            self.__abr_probe_backoff = max(
+                self.__abr_increase_interval, self.__abr_probe_backoff * 0.5
+            )
+            return target
         return None
 
     def __maybe_adapt_bitrate(self, now: float) -> None:
@@ -380,10 +433,12 @@ class DirectConference:
         if attempts and sent_delta == 0:
             return
 
+        latency_ms = self.__send_video.peer_latency_ms
+
         can_reconfigure = self.__send_video.supports_dynamic_bitrate
         lowered = False
         if can_reconfigure:
-            new_target = self._abr_decision(drop_frac, goodput_bps, now)
+            new_target = self._abr_decision(drop_frac, goodput_bps, now, latency_ms)
             if new_target is not None and new_target != self.__abr_target:
                 if self.__send_video.reconfigure_bitrate(new_target):
                     lowered = new_target < self.__abr_target
@@ -394,10 +449,16 @@ class DirectConference:
                         )
                     )
 
+        if not can_reconfigure:
+            congested = self._latency_congested(latency_ms)
+        else:
+            congested = False
+
         at_floor = not can_reconfigure or self.__abr_target <= int(self.__abr_min * 1.05)
-        if drop_frac > self.__shed_threshold and at_floor and not lowered:
+        overloaded = drop_frac > self.__shed_threshold or congested
+        if overloaded and at_floor and not lowered:
             self.__shed_level = min(self.__shed_max, self.__shed_level + 1)
-        elif drop_frac <= 0.0 and self.__shed_level > 0:
+        elif drop_frac <= 0.0 and not congested and self.__shed_level > 0:
             self.__shed_level = max(0, self.__shed_level - 1)
 
     def __video_recv_loop(self) -> None:
