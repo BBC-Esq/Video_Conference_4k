@@ -11,6 +11,7 @@ from ..utils.common import (
     log_version,
 )
 from .jitter import JitterBuffer
+from .aec import EchoCanceller
 
 sd = import_dependency_safe("sounddevice", error="silent")
 
@@ -32,6 +33,8 @@ class AudioCapture:
         enable_input: bool = True,
         enable_output: bool = True,
         output_jitter_ms: float = 0.0,
+        echo_cancellation: bool = True,
+        echo_tail_ms: float = 120.0,
         logging: bool = False,
         **options: dict
     ):
@@ -70,6 +73,12 @@ class AudioCapture:
 
         self.__input_stream = None
         self.__output_stream = None
+        self.__duplex_stream = None
+
+        self.__aec = None
+        self.__aec_failures = 0
+        self.__echo_cancellation = bool(echo_cancellation) and enable_input and enable_output
+        self.__echo_tail_ms = echo_tail_ms
 
         self.__terminate = threading.Event()
         self.__lifecycle_lock = threading.RLock()
@@ -89,6 +98,21 @@ class AudioCapture:
 
         if "blocksize" in options:
             self.__chunk_size = options["blocksize"]
+
+        if self.__echo_cancellation:
+            if not self.__chunk_size:
+                logger.warning(
+                    "Echo cancellation needs a fixed block size and this stream has "
+                    "none; it will be disabled."
+                )
+                self.__echo_cancellation = False
+            else:
+                self.__aec = EchoCanceller(
+                    block_size=self.__chunk_size,
+                    sample_rate=self.__sample_rate,
+                    tail_ms=self.__echo_tail_ms,
+                    logging=self.__logging,
+                )
 
         self.__logging and logger.debug(
             "AudioCapture initialized with sample_rate={}, channels={}, chunk_size={}, dtype={}".format(
@@ -127,6 +151,20 @@ class AudioCapture:
             return None
         with self.__jitter_lock:
             return round(self.__jitter.depth_ms, 1)
+
+    @property
+    def echo_cancellation(self) -> bool:
+        return self.__aec is not None
+
+    @property
+    def echo_reduction_db(self) -> Optional[float]:
+        """How much echo is currently being removed. None when not cancelling."""
+        return self.__aec.erle_db if self.__aec is not None else None
+
+    @property
+    def duplex(self) -> bool:
+        """Whether capture and playback share one device clock."""
+        return self.__duplex_stream is not None
 
     def jitter_underruns(self) -> int:
         """Playback callbacks that were served silence because audio had not arrived."""
@@ -198,8 +236,39 @@ class AudioCapture:
     def __input_callback(self, indata, frames, time_info, status):
         if status:
             self.__logging and logger.warning("Input status: {}".format(status))
+        self.__handle_input(indata, frames)
+
+    def __duplex_callback(self, indata, outdata, frames, time_info, status):
+        """Capture and playback in one callback, sharing one device clock.
+
+        Two separate streams each run on their own clock and drift apart, which
+        leaves no fixed relationship between what was played and what the
+        microphone heard a moment later. Echo cancellation needs exactly that
+        relationship, so the two directions are handled together here: outdata
+        is filled first and then handed to the canceller as the reference for
+        what it is about to hear come back.
+        """
+        if status:
+            self.__logging and logger.warning("Duplex status: {}".format(status))
+
+        self.__fill_output(outdata, frames)
+
+        mic = indata
+        if self.__aec is not None:
+            try:
+                mic = self.__aec.process(indata, outdata)
+            except Exception as e:
+                self.__aec_failures += 1
+                if self.__aec_failures == 1:
+                    logger.error("Echo cancellation failed, passing the microphone "
+                                 "through untouched: {}".format(e))
+                mic = indata
+
+        self.__handle_input(mic, frames)
+
+    def __handle_input(self, indata, frames):
         if not self.__terminate.is_set():
-            audio_data = indata.copy()
+            audio_data = np.asarray(indata).copy()
             pts_ns = time.perf_counter_ns() - int(frames / self.__sample_rate * 1e9)
             try:
                 self.__input_queue.put_nowait(audio_data)
@@ -226,6 +295,9 @@ class AudioCapture:
     def __output_callback(self, outdata, frames, time_info, status):
         if status:
             self.__logging and logger.warning("Output status: {}".format(status))
+        self.__fill_output(outdata, frames)
+
+    def __fill_output(self, outdata, frames):
         out_channels = outdata.shape[1] if outdata.ndim > 1 else 1
         needed = outdata.shape[0]
 
@@ -304,12 +376,52 @@ class AudioCapture:
         with self.__lifecycle_lock:
             return self.__start_locked()
 
+    def __start_callback_worker(self) -> None:
+        self.__callback_thread = threading.Thread(
+            target=self.__callback_worker, daemon=True, name="AudioUserCallback"
+        )
+        self.__callback_thread.start()
+
     def __start_locked(self) -> T:
         if self.__is_running:
             self.__logging and logger.warning("AudioCapture is already running.")
             return self
 
         self.__terminate.clear()
+
+        if self.__enable_input and self.__enable_output:
+            try:
+                self.__duplex_stream = sd.Stream(
+                    device=(self.__input_device, self.__output_device),
+                    samplerate=self.__sample_rate,
+                    channels=self.__channels,
+                    dtype=self.__dtype,
+                    blocksize=self.__chunk_size,
+                    latency=self.__latency,
+                    callback=self.__duplex_callback,
+                )
+                self.__duplex_stream.start()
+                self.__logging and logger.debug(
+                    "Duplex stream started; echo cancellation {}.".format(
+                        "on" if self.__aec is not None else "off"
+                    )
+                )
+                self.__start_callback_worker()
+                self.__is_running = True
+                return self
+            except Exception as e:
+                # A single handle cannot always span two different devices, and
+                # exclusive-mode drivers may refuse one outright. Two streams
+                # still carry a call; they only cost the shared clock that echo
+                # cancellation depends on, so it is switched off rather than
+                # left running against a reference it cannot trust.
+                logger.warning(
+                    "Could not open one duplex stream ({}); falling back to separate "
+                    "capture and playback streams. Echo cancellation is unavailable "
+                    "in that mode.".format(e)
+                )
+                self.__duplex_stream = None
+                self.__aec = None
 
         if self.__enable_input:
             try:
@@ -353,10 +465,7 @@ class AudioCapture:
                 self.__output_stream = None
                 raise
 
-        self.__callback_thread = threading.Thread(
-            target=self.__callback_worker, daemon=True, name="AudioUserCallback"
-        )
-        self.__callback_thread.start()
+        self.__start_callback_worker()
 
         self.__is_running = True
         self.__logging and logger.debug("AudioCapture started successfully.")
@@ -450,6 +559,15 @@ class AudioCapture:
         self.__logging and logger.debug("Stopping AudioCapture.")
         self.__terminate.set()
         self.__is_running = False
+
+        if self.__duplex_stream is not None:
+            try:
+                self.__duplex_stream.stop()
+                self.__duplex_stream.close()
+                self.__logging and logger.debug("Duplex stream stopped.")
+            except Exception as e:
+                logger.error("Error stopping duplex stream: {}".format(e))
+            self.__duplex_stream = None
 
         if self.__input_stream is not None:
             try:

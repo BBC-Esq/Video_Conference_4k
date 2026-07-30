@@ -830,6 +830,12 @@ def run_call(args):
                 if stats.get("audio_jitter_depth_ms") is not None:
                     audio_bits.append("buffer {:.0f} ms".format(stats["audio_jitter_depth_ms"]))
                 audio_bits.append("underruns {}".format(stats.get("audio_underruns", 0)))
+                if stats.get("echo_cancellation"):
+                    reduction = stats.get("echo_reduction_db")
+                    audio_bits.append("echo -{:.0f} dB".format(abs(reduction))
+                                      if reduction and reduction > 1.0 else "echo cancel on")
+                elif stats.get("audio_duplex") is False:
+                    audio_bits.append("echo cancel OFF (no shared clock)")
                 if stats.get("audio_callback_drops"):
                     audio_bits.append("cb drops {}".format(stats["audio_callback_drops"]))
 
