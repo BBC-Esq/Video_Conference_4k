@@ -44,7 +44,7 @@ if aiortc is not None:
 
         async def recv(self):
             if not self.__started:
-                self.__start_time = time.time()
+                self.__start_time = time.monotonic()
                 self.__started = True
                 if self.__video_source is not None and hasattr(self.__video_source, "start"):
                     if hasattr(self.__video_source, "is_running"):
@@ -56,7 +56,7 @@ if aiortc is not None:
             pts = self.__timestamp
             self.__timestamp += int(self.__video_ptime * VIDEO_CLOCK_RATE)
 
-            wait = self.__start_time + (pts / VIDEO_CLOCK_RATE) - time.time()
+            wait = self.__start_time + (pts / VIDEO_CLOCK_RATE) - time.monotonic()
             if wait > 0:
                 await asyncio.sleep(wait)
 
@@ -113,7 +113,7 @@ if aiortc is not None:
 
         async def recv(self):
             if not self.__started:
-                self.__start_time = time.time()
+                self.__start_time = time.monotonic()
                 self.__started = True
                 if self.__audio_source is not None and hasattr(self.__audio_source, "start"):
                     if not self.__audio_source.is_running:
@@ -124,7 +124,7 @@ if aiortc is not None:
             pts = self.__timestamp
             self.__timestamp += self.__samples_per_frame
 
-            wait = self.__start_time + (pts / self.__sample_rate) - time.time()
+            wait = self.__start_time + (pts / self.__sample_rate) - time.monotonic()
             if wait > 0:
                 await asyncio.sleep(wait)
 

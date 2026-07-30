@@ -72,9 +72,13 @@ class AudioCapture:
         self.__output_stream = None
 
         self.__terminate = threading.Event()
+        self.__lifecycle_lock = threading.RLock()
         self.__is_running = False
 
         self.__on_audio_callback = None
+        self.__callback_queue = queue.Queue(maxsize=16)
+        self.__callback_thread = None
+        self.__callback_drops = 0
 
         options = {str(k).strip(): v for k, v in options.items()}
 
@@ -120,15 +124,55 @@ class AudioCapture:
 
     @staticmethod
     def get_devices() -> dict:
+        """Enumerate audio devices, naming the host API each one belongs to.
+
+        The same headset appears once per host API with different capabilities,
+        so the name alone is not enough to pick the right one.
+        """
         import_dependency_safe("sounddevice" if sd is None else "")
-        devices = sd.query_devices()
+        try:
+            devices = sd.query_devices()
+        except Exception as e:
+            logger.error("Could not enumerate audio devices: {}".format(e))
+            return {"input": [], "output": []}
+
+        try:
+            hostapis = sd.query_hostapis()
+        except Exception:
+            hostapis = []
+
+        try:
+            default_input, default_output = sd.default.device
+        except Exception:
+            default_input, default_output = None, None
+
+        def describe(index, dev, channels_key):
+            api_index = dev.get("hostapi")
+            api = ""
+            if isinstance(api_index, int) and 0 <= api_index < len(hostapis):
+                api = hostapis[api_index].get("name", "")
+            return {
+                "index": index,
+                "name": dev.get("name", ""),
+                "channels": dev[channels_key],
+                "hostapi": api,
+                "default_samplerate": dev.get("default_samplerate"),
+            }
+
         input_devices = []
         output_devices = []
         for i, dev in enumerate(devices):
-            if dev["max_input_channels"] > 0:
-                input_devices.append({"index": i, "name": dev["name"], "channels": dev["max_input_channels"]})
-            if dev["max_output_channels"] > 0:
-                output_devices.append({"index": i, "name": dev["name"], "channels": dev["max_output_channels"]})
+            try:
+                if dev["max_input_channels"] > 0:
+                    entry = describe(i, dev, "max_input_channels")
+                    entry["is_default"] = (i == default_input)
+                    input_devices.append(entry)
+                if dev["max_output_channels"] > 0:
+                    entry = describe(i, dev, "max_output_channels")
+                    entry["is_default"] = (i == default_output)
+                    output_devices.append(entry)
+            except Exception:
+                continue
         return {"input": input_devices, "output": output_devices}
 
     def set_audio_callback(self, callback: Callable[[NDArray], None]) -> None:
@@ -162,9 +206,9 @@ class AudioCapture:
                         pass
             if self.__on_audio_callback is not None:
                 try:
-                    self.__on_audio_callback(audio_data)
-                except Exception as e:
-                    logger.error("Error in audio callback: {}".format(e))
+                    self.__callback_queue.put_nowait(audio_data)
+                except queue.Full:
+                    self.__callback_drops += 1
 
     def __output_callback(self, outdata, frames, time_info, status):
         if status:
@@ -220,7 +264,34 @@ class AudioCapture:
             return data[:, :out_channels]
         return np.pad(data, ((0, 0), (0, out_channels - in_channels)), mode="constant")
 
+    def __callback_worker(self) -> None:
+        """Run the user's audio callback away from the PortAudio thread.
+
+        Anything slow or blocking in that callback would otherwise stall the
+        device thread and glitch capture for every subscriber.
+        """
+        while not self.__terminate.is_set():
+            try:
+                audio_data = self.__callback_queue.get(timeout=0.1)
+            except queue.Empty:
+                continue
+            callback = self.__on_audio_callback
+            if callback is None:
+                continue
+            try:
+                callback(audio_data)
+            except Exception as e:
+                logger.error("Error in audio callback: {}".format(e))
+
+    @property
+    def callback_drops(self) -> int:
+        return self.__callback_drops
+
     def start(self) -> T:
+        with self.__lifecycle_lock:
+            return self.__start_locked()
+
+    def __start_locked(self) -> T:
         if self.__is_running:
             self.__logging and logger.warning("AudioCapture is already running.")
             return self
@@ -259,7 +330,20 @@ class AudioCapture:
                 self.__logging and logger.debug("Output stream started.")
             except Exception as e:
                 logger.error("Failed to start output stream: {}".format(e))
+                if self.__input_stream is not None:
+                    try:
+                        self.__input_stream.stop()
+                        self.__input_stream.close()
+                    except Exception:
+                        pass
+                    self.__input_stream = None
+                self.__output_stream = None
                 raise
+
+        self.__callback_thread = threading.Thread(
+            target=self.__callback_worker, daemon=True, name="AudioUserCallback"
+        )
+        self.__callback_thread.start()
 
         self.__is_running = True
         self.__logging and logger.debug("AudioCapture started successfully.")
@@ -346,6 +430,10 @@ class AudioCapture:
                 break
 
     def stop(self) -> None:
+        with self.__lifecycle_lock:
+            self.__stop_locked()
+
+    def __stop_locked(self) -> None:
         self.__logging and logger.debug("Stopping AudioCapture.")
         self.__terminate.set()
         self.__is_running = False
@@ -367,6 +455,10 @@ class AudioCapture:
             except Exception as e:
                 logger.error("Error stopping output stream: {}".format(e))
             self.__output_stream = None
+
+        if self.__callback_thread is not None:
+            self.__callback_thread.join(timeout=1.0)
+            self.__callback_thread = None
 
         self.clear_input_queue()
         self.clear_output_queue()

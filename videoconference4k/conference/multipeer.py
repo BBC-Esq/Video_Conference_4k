@@ -245,8 +245,8 @@ class MultiPeerConference(BaseConference):
             return False
 
         rtc = self.__peers[peer_name]
-        start = time.time()
-        while (time.time() - start) < timeout:
+        start = time.monotonic()
+        while (time.monotonic() - start) < timeout:
             if rtc.connection_state == "connected":
                 return True
             time.sleep(0.1)

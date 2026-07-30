@@ -82,8 +82,8 @@ def discover_igd(timeout: float = 3.0) -> Optional[Dict[str, str]]:
     sock.settimeout(timeout)
     try:
         sock.sendto(request, (SSDP_ADDR, SSDP_PORT))
-        deadline = time.time() + timeout
-        while time.time() < deadline:
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
             try:
                 data, _ = sock.recvfrom(65507)
             except socket.timeout:

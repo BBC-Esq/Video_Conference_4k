@@ -285,8 +285,8 @@ class PeerConference(BaseConference, CallbackRegistrar):
             return self.__last_remote_audio
 
     def wait_for_connection(self, timeout: float = 30.0) -> bool:
-        start = time.time()
-        while not self.__is_connected and (time.time() - start) < timeout:
+        start = time.monotonic()
+        while not self.__is_connected and (time.monotonic() - start) < timeout:
             time.sleep(0.1)
         return self.__is_connected
 

@@ -149,6 +149,7 @@ class SyncTransport:
         if self.__pattern < 2:
             self.__poll = zmq.Poller()
             self.__max_retries = 3
+            self.__retry_budget = 3
             self.__request_timeout = 4000
         else:
             self.__subscriber_timeout = None
@@ -253,6 +254,7 @@ class SyncTransport:
             elif key == "max_retries" and isinstance(value, int) and self.__pattern < 2:
                 if value >= 0:
                     self.__max_retries = value
+                    self.__retry_budget = value
                 else:
                     logger.warning("Invalid `max_retries` value skipped!")
 
@@ -660,6 +662,7 @@ class SyncTransport:
                         self.__terminate.set()
                         self.__queue.append(None)
                         break
+                    self.__max_retries = self.__retry_budget
                 else:
                     logger.critical("No response from Server(s), Reconnecting again...")
                     self.__msg_socket.close(linger=0)
@@ -699,7 +702,7 @@ class SyncTransport:
                         self.__queue.append(None)
                         break
 
-            if msg_json and msg_json["terminate_flag"]:
+            if msg_json and msg_json.get("terminate_flag"):
                 if self.__multiserver_mode:
                     if msg_json["port"] in self.__port_buffer:
                         if self.__pattern == 1:
@@ -985,6 +988,7 @@ class SyncTransport:
                 socks = dict(self.__poll.poll(self.__request_timeout))
                 if socks.get(self.__msg_socket) == zmq.POLLIN:
                     recv_json = self.__msg_socket.recv_json(flags=self.__msg_flag)
+                    self.__max_retries = self.__retry_budget
                 else:
                     logger.critical("No response from Client, Reconnecting again...")
                     self.__msg_socket.setsockopt(zmq.LINGER, 0)
@@ -1058,6 +1062,7 @@ class SyncTransport:
                 socks = dict(self.__poll.poll(self.__request_timeout))
                 if socks.get(self.__msg_socket) == zmq.POLLIN:
                     recv_confirmation = self.__msg_socket.recv()
+                    self.__max_retries = self.__retry_budget
                     while self.__pattern == 0:
                         try:
                             self.__msg_socket.recv(flags=zmq.NOBLOCK)

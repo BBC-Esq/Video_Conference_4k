@@ -33,7 +33,48 @@ pip install PyNvVideoCodec
 
 ## 📖 Quick Start
 
-### Simple Peer-to-Peer Video Call
+### 4K Call Over Your Own Network
+
+`DirectConference` is the path this library is built around: hardware encoding,
+per-direction codec negotiation, a jitter buffer and lip-sync. Both machines run
+the same script, each pointing at the other.
+
+```python
+from videoconference4k import DirectConference
+
+conference = DirectConference(
+    peer_address="192.168.1.42",          # the other machine
+    resolution=(3840, 2160),
+    framerate=30,
+    gpu_accelerated=True,
+    codec_priority=("h264", "hevc", "av1"),
+    enable_audio=True,
+)
+
+conference.start()
+
+while conference.is_running:
+    local_frame = conference.get_local_frame()
+    remote_frame = conference.get_remote_frame()
+    # hand them to whatever you are drawing with
+
+conference.stop()
+```
+
+Ask it what it settled on at any point:
+
+```python
+s = conference.stats()
+print(s["send_codec"], s["send_impl"])   # e.g. h264 nvenc
+print(s["recv_codec"], s["recv_impl"])   # what is arriving, and what decodes it
+```
+
+`examples/two_machine_call.py` wraps this in a window with a preflight check
+(`--preflight`) that reports what your camera, GPU and ffmpeg build can do.
+
+### Peer-to-Peer Call Over the Internet
+
+`PeerConference` uses WebRTC, so it traverses NAT without port forwarding.
 
 **Person A (creates the invite):**
 ```python
@@ -179,6 +220,7 @@ else:
 
 | Component | Description |
 |-----------|-------------|
+| `DirectConference` | Two-party calling over your own network, up to 4K with hardware codecs |
 | `PeerConference` | Simple two-party video conferencing |
 | `MultiPeerConference` | Multi-party video conferencing |
 | `VideoCapture` | Capture video from cameras or files |
