@@ -6,14 +6,16 @@
 
 ## ✨ Features
 
-- 📹 **High-quality video streaming** — Support for up to 4K resolution at 60fps
-- 🔗 **Peer-to-peer conferencing** — Direct P2P connections without a central server
-- 👥 **Multi-peer support** — Connect with multiple participants simultaneously
-- 🎙️ **Audio capture and playback** — Full-duplex audio communication
-- 🌐 **Flexible networking** — Works over LAN or the internet via WebRTC
-- 🔒 **Secure connections** — Optional ZMQ authentication with CurveZMQ
-- 💻 **Cross-platform** — Works on Windows, macOS, and Linux
-- 🚀 **GPU Acceleration** — Optional NVIDIA hardware encoding via PyNvVideoCodec
+- 📹 **High-quality video streaming** — up to 4K resolution at 60fps
+- 🔗 **Peer-to-peer conferencing** — direct connections without a central server
+- 👥 **Multi-peer support** — connect with several participants at once
+- 🎙️ **Audio that keeps up** — Opus over its own path, a jitter buffer for uneven networks, and lip-sync that slews video to the audio clock
+- 🔇 **Echo cancellation** — the other person stops hearing themselves when you are not on headphones
+- 🎬 **Codec negotiation** — both ends agree on H.264, HEVC or AV1 per direction, in hardware where available
+- 📶 **Adaptive bitrate** — the picture backs off under congestion and probes carefully on the way back up
+- 🌐 **Flexible networking** — your own LAN, or the internet via WebRTC with room codes, TURN and optional UPnP
+- 💻 **Cross-platform** — Windows, macOS and Linux
+- 🚀 **Hardware encoding** — NVIDIA NVENC, Intel Quick Sync, or CPU, whichever the machine has
 
 ---
 
@@ -24,9 +26,31 @@
 pip install git+https://github.com/BBC-Esq/Video_Conference_4k.git@main
 ```
 
-**With NVIDIA GPU acceleration (requires NVIDIA GPU and CUDA):**
+**ffmpeg** — needed for Intel Quick Sync, for CPU encoding, and for software
+decoding. Without it on your PATH, only NVIDIA encoding and motion-JPEG are
+available, so a machine with no NVIDIA card quietly falls back to JPEG:
+
 ```bash
-pip install PyNvVideoCodec
+winget install Gyan.FFmpeg
+```
+
+On macOS use `brew install ffmpeg`; on Linux install `ffmpeg` from your package
+manager. `examples/two_machine_call.py --preflight` will tell you what your
+build of ffmpeg can actually do.
+
+**With NVIDIA GPU acceleration (requires an NVIDIA GPU and a recent driver):**
+```bash
+pip install "videoconference4k[gpu] @ git+https://github.com/BBC-Esq/Video_Conference_4k.git@main"
+```
+
+**With room-code signaling for calls over the internet:**
+```bash
+pip install "videoconference4k[signaling] @ git+https://github.com/BBC-Esq/Video_Conference_4k.git@main"
+```
+
+**Better echo cancellation (optional):**
+```bash
+pip install livekit
 ```
 
 ---
@@ -240,6 +264,35 @@ else:
 
 ---
 
+## 🛠️ Checking a machine before you call
+
+`examples/two_machine_call.py` is a working call in a window, and carries the
+diagnostics worth running first:
+
+```bash
+python examples/two_machine_call.py --preflight
+```
+
+Reports your camera's real modes, which encoders and decoders actually run here
+(by running them, not by reading a list), your audio devices, and which echo
+canceller is available.
+
+```bash
+python examples/two_machine_call.py --loopback a
+```
+
+Calls this machine from itself, so the whole pipeline can be checked without a
+second computer. Run `--loopback b` in another terminal for the far end.
+
+```bash
+python examples/two_machine_call.py 192.168.1.42 --preset 1080p60
+```
+
+The call itself. Presets run from `safe` (720p30, works between any two
+machines) up to `4k30`.
+
+---
+
 ## 🧩 Components
 
 | Component | Description |
@@ -259,7 +312,16 @@ else:
 ## 📋 Requirements
 
 - Python 3.10+
-- For GPU acceleration: NVIDIA GPU with NVENC support + CUDA Toolkit
+- **ffmpeg on your PATH** — required for Intel Quick Sync, CPU encoding and
+  software decoding; without it the encoder ladder falls through to motion-JPEG
+- For NVIDIA hardware encoding: an NVENC-capable GPU and a driver new enough for
+  CUDA 12 (527.41 or later on Windows)
+- A camera and, for calls, a microphone and speakers or a headset
+
+Security note: CurveZMQ authentication exists on `SyncTransport` and is set
+through its options, but `DirectConference` does not currently expose it and the
+audio transport has none, so calls on the direct path are unencrypted. Treat it
+as a local-network feature until that is wired through.
 
 ---
 
